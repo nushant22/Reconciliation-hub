@@ -96,6 +96,49 @@ is workbook serialisation (a 188k-row exact-match sheet is ~12MB), which is why
 above 50k rows per sheet. If a batch ever outgrows RAM entirely, the ingestion seam in
 `loader.py` is where `pl.scan_csv` replaces `pl.read_csv` — nothing downstream changes.
 
+### Handling Large Files on Streamlit Community Cloud
+
+**Memory Limits:** Streamlit Community Cloud provides ~1GB RAM. For datasets exceeding 500k total rows or 100MB+ files:
+
+- The app automatically caps output sheets at **50,000 rows** to prevent memory exhaustion
+- All rows are still processed for matching statistics and counts
+- Only the detail sheets (exact matches, mismatches, orphans) are truncated in the output workbook
+- A truncation notice appears on the Summary sheet
+
+**Best Practices for Large Datasets:**
+1. **Split by time period** — Reconcile monthly batches instead of yearly files
+2. **Filter before export** — Remove test/cancelled transactions in your source system
+3. **Expect 2-5 minutes** for files with 500k-1M rows
+4. **Consider self-hosting** for regular multi-million row reconciliations (see Deployment Options below)
+
+**If the app crashes:**
+- Reduce file size by splitting data into smaller chunks
+- Filter out non-essential columns in your export
+- For production workloads with >1M rows regularly, deploy to AWS/GCP with 4GB+ RAM
+
+## Deployment Options
+
+### Streamlit Community Cloud (Current)
+- **Pros:** Free, zero setup, auto-deploys from GitHub
+- **Limits:** 1GB RAM, 2 CPU cores
+- **Best for:** Files up to 500k rows, occasional reconciliations
+
+### Self-Hosted (Recommended for Production)
+```bash
+# AWS EC2 / GCP Compute Engine (recommended: 2 vCPU, 4GB RAM)
+pip install -r requirements.txt
+streamlit run app.py --server.port 8080
+
+# Or Docker
+docker build -t recon-engine .
+docker run -p 8080:8080 recon-engine
+```
+
+### Environment Variables for Tuning
+- `RECON_SHEET_ROW_CAP` — Max rows per output sheet (default: unlimited, set to 50k on Streamlit Cloud)
+- `RECON_LOG_LEVEL` — Logging verbosity (DEBUG, INFO, WARNING, ERROR)
+- `RECON_AUDIT_DB` — Path to SQLite audit database (default: `recon_audit.db`)
+
 ## Extending
 
 Add a partner to `backend/profiles/company_schemas.json`; the UI picks it up on reload. If a
