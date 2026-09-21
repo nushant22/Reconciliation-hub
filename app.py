@@ -10,8 +10,6 @@ needs to:
 
 No manual attribute-mapping dropdowns.
 
-File upload limit: 1GB per file (configured in .streamlit/config.toml)
-
 Run:  streamlit run app.py
 """
 
