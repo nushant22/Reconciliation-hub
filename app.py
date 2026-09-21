@@ -182,11 +182,23 @@ def main() -> None:
     raw_left  = up_left.getvalue()
     raw_right = up_right.getvalue()
 
+    # File size warnings
+    size_left_mb = len(raw_left) / (1024 * 1024)
+    size_right_mb = len(raw_right) / (1024 * 1024)
+    total_size = size_left_mb + size_right_mb
+
+    if total_size > 100:
+        st.warning(
+            f"⚠️ Large files detected: {size_left_mb:.1f}MB + {size_right_mb:.1f}MB = {total_size:.1f}MB total. "
+            f"Processing may take 2-5 minutes. The output will be capped at 50,000 rows per sheet to prevent memory issues."
+        )
+    
     try:
-        df_left_preview  = read_table(raw_left,  up_left.name,
-                                      LoadSpec(header_row=left_cfg.header_row))
-        df_right_preview = read_table(raw_right, up_right.name,
-                                      LoadSpec(header_row=right_cfg.header_row))
+        with st.spinner("Loading and validating files..."):
+            df_left_preview  = read_table(raw_left,  up_left.name,
+                                          LoadSpec(header_row=left_cfg.header_row))
+            df_right_preview = read_table(raw_right, up_right.name,
+                                          LoadSpec(header_row=right_cfg.header_row))
     except ReconError as exc:
         st.error(str(exc))
         return
@@ -197,6 +209,14 @@ def main() -> None:
         f"**{df_right_preview.height:,}** rows × {df_right_preview.width} cols "
         f"from {right_cfg.label}."
     )
+
+    # Memory warning for extremely large datasets
+    total_rows = df_left_preview.height + df_right_preview.height
+    if total_rows > 1_000_000:
+        st.warning(
+            f"⚠️ Processing {total_rows:,} total rows may exceed available memory on the free hosting tier. "
+            f"If the app crashes, consider splitting your data into smaller batches (e.g., by month)."
+        )
 
     # ── Step 2 · Config summary (read-only, replaces the mapping dropdowns) ───
     st.markdown('<div class="step">Step 2 · Account configuration</div>',
@@ -233,9 +253,13 @@ def main() -> None:
     if not st.button("Run Reconciliation", type="primary"):
         return
 
+    # Set row cap for large datasets to prevent memory exhaustion
+    row_cap = 50_000 if total_rows > 500_000 else None
+    
     try:
         with st.spinner(
-            f"Applying filters, transforms and matching {account_name}…"
+            f"Applying filters, transforms and matching {account_name}… "
+            f"This may take 2-5 minutes for large files."
         ):
             outcome = run_account_reconciliation(
                 account_name=account_name,
@@ -244,6 +268,7 @@ def main() -> None:
                 file_right=raw_right,
                 name_right=up_right.name,
                 operator=operator,
+                row_cap=row_cap,
             )
     except ReconError as exc:
         st.error(str(exc))
@@ -257,6 +282,12 @@ def main() -> None:
         return
 
     result = outcome.result
+
+    if row_cap:
+        st.info(
+            f"ℹ️ Output was capped at {row_cap:,} rows per sheet due to large dataset size. "
+            f"All rows were still processed for matching statistics."
+        )
 
     if outcome.duplicate_of:
         st.warning(
