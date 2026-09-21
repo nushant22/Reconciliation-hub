@@ -161,6 +161,7 @@ def main() -> None:
             f"Upload {left_cfg.label} export",
             type=["csv", "tsv", "xlsx", "xls"],
             key=f"up_left_{account_name}",
+            help="Maximum file size: 1GB per file"
         )
 
     with col_r:
@@ -170,6 +171,7 @@ def main() -> None:
             f"Upload {right_cfg.label} export",
             type=["csv", "tsv", "xlsx", "xls"],
             key=f"up_right_{account_name}",
+            help="Maximum file size: 1GB per file"
         )
 
     if not (up_left and up_right):
