@@ -1,0 +1,83 @@
+{
+  "version": 3,
+  "notes": "Column names are matched case-insensitively after header cleaning. Add a partner here rather than hard-coding mappings in the UI.",
+  "profiles": [
+    {
+      "name": "NIC Asia Settlement",
+      "description": "Internal txn ledger vs NIC Asia daily settlement statement. Bank stamps settlement date in NPT; ledger is UTC.",
+      "file_a": { "header_row": 1 },
+      "file_b": { "header_row": 3 },
+      "epsilon": 0.0,
+      "keys": [
+        { "col_a": "txn_id", "col_b": "transaction id", "strip_leading_zeros": true }
+      ],
+      "values": [
+        { "col_a": "amount", "col_b": "settlement amount", "numeric": true },
+        { "col_a": "status", "col_b": "txn status", "numeric": false }
+      ]
+    },
+    {
+      "name": "Nabil Utility Batch",
+      "description": "Utility aggregator batch. Composite key (date + reference) because the reference recycles daily.",
+      "file_a": { "header_row": 1 },
+      "file_b": { "header_row": 2 },
+      "epsilon": 0.01,
+      "keys": [
+        { "col_a": "txn_date", "col_b": "posting date", "date_mode": "shift_npt" },
+        { "col_a": "ref_id", "col_b": "reference no", "strip_leading_zeros": true }
+      ],
+      "values": [
+        { "col_a": "amount", "col_b": "paid amount", "numeric": true }
+      ]
+    },
+    {
+      "name": "Generic Aggregator",
+      "description": "Neutral starting point: single reference key plus one amount column. Override the dropdowns for anything unusual.",
+      "file_a": { "header_row": 1 },
+      "file_b": { "header_row": 1 },
+      "epsilon": 0.0,
+      "keys": [
+        { "col_a": "reference", "col_b": "reference", "strip_leading_zeros": true }
+      ],
+      "values": [
+        { "col_a": "amount", "col_b": "amount", "numeric": true }
+      ]
+    },
+    {
+      "name": "ConnectNPay vs Fonepay",
+      "description": "CNP export vs Fonepay credit report. Fonepay keeps the RRN without the FP-/FT- prefixes the CNP unique_id carries.",
+      "file_a": { "header_row": 1 },
+      "file_b": { "header_row": 1 },
+      "epsilon": 0.0,
+      "keys": [
+        { "col_a": "unique_id", "col_b": "retrieval_reference_number", "strip_leading_zeros": true }
+      ],
+      "values": [
+        { "col_a": "txnamount", "col_b": "original_transaction_amount", "numeric": true }
+      ]
+    },
+    {
+      "name": "ConnectNPay vs DishHome",
+      "description": "CNP export vs DishHome partner statement (banner rows above the header on both sides).",
+      "file_a": { "header_row": 4 },
+      "file_b": { "header_row": 2 },
+      "epsilon": 0.0,
+      "keys": [
+        { "col_a": "vendor trans id", "col_b": "unique_id", "strip_leading_zeros": true }
+      ],
+      "values": [
+        { "col_a": "amount", "col_b": "txnamount", "numeric": true },
+        { "col_a": "status", "col_b": "status", "numeric": false }
+      ]
+    },
+    {
+      "name": "Custom",
+      "description": "No presets — map every attribute by hand.",
+      "file_a": { "header_row": 1 },
+      "file_b": { "header_row": 1 },
+      "epsilon": 0.0,
+      "keys": [],
+      "values": []
+    }
+  ]
+}
