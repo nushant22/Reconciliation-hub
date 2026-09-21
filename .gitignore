@@ -23,8 +23,9 @@ ENV/
 *.db
 *.sqlite3
 
-# Environment variables
+# Environment variables and secrets
 .env
+.streamlit/secrets.toml
 
 # OS
 .DS_Store

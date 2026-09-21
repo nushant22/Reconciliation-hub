@@ -1,3 +1,0 @@
-[server]
-# Maximum file upload size in MB (1024 MB = 1 GB)
-maxUploadSize = 1024
