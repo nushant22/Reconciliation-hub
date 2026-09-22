@@ -24,7 +24,7 @@ from .account_config import (
     prepare_side,
 )
 from .config import LoadSpec
-from .exporter import build_workbook
+from .csv_exporter import build_csv_archive
 from .loader import read_table
 from .matcher import ReconResult, compute_buckets
 from .pipeline import RunOutcome, _slug  # reuse the slug helper & RunOutcome dataclass
@@ -93,12 +93,12 @@ def run_account_reconciliation(
     # ── 6. Export ─────────────────────────────────────────────────────────────
     stamp    = started.strftime("%Y%m%d-%H%M%S")
     run_id   = f"run-{stamp}-{schema_hash[:6]}"
-    filename = f"recon_{_slug(account.output_prefix)}_{stamp}.xlsx"
+    filename = f"recon_{_slug(account.output_prefix)}_{stamp}.zip"
 
     if row_cap is None and os.environ.get("RECON_SHEET_ROW_CAP"):
         row_cap = int(os.environ["RECON_SHEET_ROW_CAP"])
 
-    workbook = build_workbook(
+    workbook = build_csv_archive(
         result,
         {
             "generated_at": started.isoformat(timespec="seconds"),

@@ -310,10 +310,10 @@ def main() -> None:
                 unsafe_allow_html=True)
 
     st.download_button(
-        "⬇ Download multi-sheet workbook (.xlsx)",
+        "⬇ Download CSV archive (.zip)",
         data=outcome.workbook,
         file_name=outcome.filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mime="application/zip",
     )
 
     tabs = st.tabs([

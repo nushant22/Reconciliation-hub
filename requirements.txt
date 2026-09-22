@@ -1,8 +1,7 @@
 # Lean by policy: no ORM, no microservice scaffolding, no async stack.
 polars>=1.20          # primary data engine (memory-safe joins on 500k+ rows)
 pandas>=2.2           # Excel ingestion only (read_excel) — not the match path
-openpyxl>=3.1         # .xlsx reading
-XlsxWriter>=3.2       # workbook generation (constant_memory streaming)
+openpyxl>=3.1         # .xlsx reading for input files
 streamlit>=1.40       # operations UI
 pytest>=8.0           # test suite
 # xlrd>=2.0           # uncomment only if legacy .xls partner files are in scope
