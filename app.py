@@ -182,16 +182,7 @@ def main() -> None:
     raw_left  = up_left.getvalue()
     raw_right = up_right.getvalue()
 
-    # File size warnings
-    size_left_mb = len(raw_left) / (1024 * 1024)
-    size_right_mb = len(raw_right) / (1024 * 1024)
-    total_size = size_left_mb + size_right_mb
-
-    if total_size > 100:
-        st.warning(
-            f"⚠️ Large files detected: {size_left_mb:.1f}MB + {size_right_mb:.1f}MB = {total_size:.1f}MB total. "
-            f"Processing may take 2-5 minutes. The output will be capped at 50,000 rows per sheet to prevent memory issues."
-        )
+    # File size warnings removed - no limit on file size
     
     try:
         with st.spinner("Loading and validating files..."):
