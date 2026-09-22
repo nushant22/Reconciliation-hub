@@ -244,8 +244,8 @@ def main() -> None:
     if not st.button("Run Reconciliation", type="primary"):
         return
 
-    # Set row cap for large datasets to prevent memory exhaustion
-    row_cap = 50_000 if total_rows > 500_000 else None
+    # No row cap - process all rows
+    row_cap = None
     
     try:
         with st.spinner(
@@ -273,12 +273,6 @@ def main() -> None:
         return
 
     result = outcome.result
-
-    if row_cap:
-        st.info(
-            f"ℹ️ Output was capped at {row_cap:,} rows per sheet due to large dataset size. "
-            f"All rows were still processed for matching statistics."
-        )
 
     if outcome.duplicate_of:
         st.warning(
