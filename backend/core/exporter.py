@@ -950,7 +950,7 @@ def _excel_sheet_name(name: str, max_len: int = 31) -> str:
     
     Excel sheet names must:
     - Be 1-31 characters long
-    - Not contain: \ / : * ? [ ]
+    - Not contain: \\ / : * ? [ ]
     - Not start or end with an apostrophe
     
     Args:
