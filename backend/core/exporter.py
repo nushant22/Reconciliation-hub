@@ -948,21 +948,42 @@ def write_workbook(result: ReconResult, path: str, meta: dict | None = None) -> 
 def _excel_sheet_name(name: str, max_len: int = 31) -> str:
     """Sanitise a string into a valid Excel sheet name.
     
-    Excel sheet names cannot contain: \ / : * ? [ ]
-    Also, they must be 1-31 characters long and cannot be empty.
+    Excel sheet names must:
+    - Be 1-31 characters long
+    - Not contain: \ / : * ? [ ]
+    - Not start or end with an apostrophe
+    
+    Args:
+        name: The proposed worksheet name
+        max_len: Maximum length (default 31, Excel's limit)
+    
+    Returns:
+        A valid Excel worksheet name
     """
-    if not name or not name.strip():
+    if not name or not isinstance(name, str):
+        return "Detail"
+    
+    name = str(name).strip()
+    if not name:
         return "Detail"
     
     # Remove invalid characters: \ / : * ? [ ]
     invalid_chars = ['\\', '/', ':', '*', '?', '[', ']']
     cleaned = "".join(ch if ch not in invalid_chars else "_" for ch in name)
     
-    # Excel also doesn't allow leading/trailing spaces or apostrophes
-    cleaned = cleaned.strip().strip("'").strip()
+    # Remove leading/trailing apostrophes (Excel restriction)
+    cleaned = cleaned.strip("'").strip()
+    
+    # Ensure not empty after cleaning
+    if not cleaned:
+        return "Detail"
     
     # Truncate to max length
-    cleaned = cleaned[:max_len] if len(cleaned) > max_len else cleaned
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len]
     
-    # Fallback if everything was stripped away
+    # Final validation: ensure no apostrophes at edges after truncation
+    cleaned = cleaned.strip("'").strip()
+    
+    # Ultimate fallback
     return cleaned if cleaned else "Detail"
