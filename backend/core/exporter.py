@@ -5,7 +5,7 @@ Sheet contract — fixed, because downstream Ops macros depend on it:
     2. <Profile name>                       Per-account detail: Volume, Matched Breakdown,
                                             Unmatched Breakdown (three labelled sections)
     3. Unrecon_Summary                      Success-only unreconciled transactions summary
-    4. Reconciled_and_Unreconciled_Details  Reconciled (matched) and unreconciled (orphan) transactions:
+    4. Recon_and_Unrecon_Details            Reconciled (matched) and unreconciled (orphan) transactions:
                                             - Section 1: Successfully Reconciled (exact matches + value mismatches)
                                             - Section 2: Unreconciled Success-status transactions
                                             - Section 3: Unreconciled Other-status transactions
@@ -43,7 +43,7 @@ CONSTANT_MEMORY_THRESHOLD = 50_000
 
 # Sheet names in workbook order — the first four are the new reference-style
 # sheets; Value_Mismatches is retained for ops triage / downstream macros.
-SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details", "Value_Mismatches")
+SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Recon_and_Unrecon_Details", "Value_Mismatches")
 
 # Kept for test-suite back-compat: tests that reference the old individual
 # data-dump sheets should migrate to the new names above, but the constants
@@ -670,7 +670,7 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
     profile = result.config.profile_name
 
     ws.merge_range(0, 0, 0, 5,
-                   "Reconciled and Unreconciled Transactions Details", formats["title"])
+                   "Reconciled and Unreconciled Transaction Details", formats["title"])
     ws.set_row(0, 26)
 
     row = 2
@@ -858,7 +858,7 @@ def build_workbook(
         1. Summary                              — account-wise overview + run metadata
         2. Detail                               — per-account three-section layout
         3. Unrecon_Summary                      — success-only orphan counts
-        4. Reconciled_and_Unreconciled_Details  — reconciled (matched) and unreconciled (orphan) transactions:
+        4. Recon_and_Unrecon_Details            — reconciled (matched) and unreconciled (orphan) transactions:
                                                    * Successfully Reconciled (exact matches + value mismatches)
                                                    * Unreconciled Success-status transactions
                                                    * Unreconciled Other-status transactions
@@ -887,30 +887,51 @@ def build_workbook(
         truncated["Value_Mismatches"] = vm_full
 
     # 1. Summary
-    ws = wb.add_worksheet("Summary")
-    ws.set_tab_color(BRAND_GREEN)
-    _write_summary(wb, ws, result, fmts, meta, truncated, row_cap)
+    try:
+        ws = wb.add_worksheet("Summary")
+        ws.set_tab_color(BRAND_GREEN)
+        _write_summary(wb, ws, result, fmts, meta, truncated, row_cap)
+    except Exception as e:
+        log.error(f"Failed to create 'Summary' worksheet: {e}")
+        raise
 
     # 2. Detail — sheet name = sanitised profile name (max 31 chars, Excel limit)
     detail_name = _excel_sheet_name(result.config.profile_name)
-    ws = wb.add_worksheet(detail_name)
-    ws.set_tab_color(SUCCESS_CLR)
-    _write_detail(wb, ws, result, fmts)
+    log.info(f"Creating Detail worksheet with name: '{detail_name}' (length: {len(detail_name)})")
+    try:
+        ws = wb.add_worksheet(detail_name)
+        ws.set_tab_color(SUCCESS_CLR)
+        _write_detail(wb, ws, result, fmts)
+    except Exception as e:
+        log.error(f"Failed to create Detail worksheet '{detail_name}': {e}")
+        raise
 
     # 3. Unrecon_Summary
-    ws = wb.add_worksheet("Unrecon_Summary")
-    ws.set_tab_color(WARNING_CLR)
-    _write_unrecon_summary(wb, ws, result, fmts)
+    try:
+        ws = wb.add_worksheet("Unrecon_Summary")
+        ws.set_tab_color(WARNING_CLR)
+        _write_unrecon_summary(wb, ws, result, fmts)
+    except Exception as e:
+        log.error(f"Failed to create 'Unrecon_Summary' worksheet: {e}")
+        raise
 
-    # 4. Reconciled_and_Unreconciled_Details
-    ws = wb.add_worksheet("Reconciled_and_Unreconciled_Details")
-    ws.set_tab_color(DANGER_CLR)
-    _write_unrecon_details(wb, ws, result, fmts, row_cap)
+    # 4. Recon_and_Unrecon_Details (shortened to fit 31-char Excel limit)
+    try:
+        ws = wb.add_worksheet("Recon_and_Unrecon_Details")
+        ws.set_tab_color(DANGER_CLR)
+        _write_unrecon_details(wb, ws, result, fmts, row_cap)
+    except Exception as e:
+        log.error(f"Failed to create 'Recon_and_Unrecon_Details' worksheet: {e}")
+        raise
 
     # 5. Value_Mismatches
-    ws = wb.add_worksheet("Value_Mismatches")
-    ws.set_tab_color(WARNING_CLR)
-    _write_value_mismatches(wb, ws, vm_df, fmts, row_cap, full_height=vm_full)
+    try:
+        ws = wb.add_worksheet("Value_Mismatches")
+        ws.set_tab_color(WARNING_CLR)
+        _write_value_mismatches(wb, ws, vm_df, fmts, row_cap, full_height=vm_full)
+    except Exception as e:
+        log.error(f"Failed to create 'Value_Mismatches' worksheet: {e}")
+        raise
 
     wb.close()
     payload = buffer.getvalue()
@@ -925,7 +946,23 @@ def write_workbook(result: ReconResult, path: str, meta: dict | None = None) -> 
 
 
 def _excel_sheet_name(name: str, max_len: int = 31) -> str:
-    """Sanitise a string into a valid Excel sheet name."""
-    invalid = r"\/:*?[]"
-    cleaned = "".join(ch if ch not in invalid else "_" for ch in name)
-    return cleaned[:max_len] if cleaned else "Detail"
+    """Sanitise a string into a valid Excel sheet name.
+    
+    Excel sheet names cannot contain: \ / : * ? [ ]
+    Also, they must be 1-31 characters long and cannot be empty.
+    """
+    if not name or not name.strip():
+        return "Detail"
+    
+    # Remove invalid characters: \ / : * ? [ ]
+    invalid_chars = ['\\', '/', ':', '*', '?', '[', ']']
+    cleaned = "".join(ch if ch not in invalid_chars else "_" for ch in name)
+    
+    # Excel also doesn't allow leading/trailing spaces or apostrophes
+    cleaned = cleaned.strip().strip("'").strip()
+    
+    # Truncate to max length
+    cleaned = cleaned[:max_len] if len(cleaned) > max_len else cleaned
+    
+    # Fallback if everything was stripped away
+    return cleaned if cleaned else "Detail"

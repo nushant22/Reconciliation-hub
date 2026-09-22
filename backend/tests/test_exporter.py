@@ -40,10 +40,10 @@ def test_workbook_has_the_contracted_sheets():
     wb = workbook_from(read_table(CSV_A, "a.csv"), read_table(CSV_B, "b.csv"))
     names = wb.sheetnames
     # Always present by exact name
-    for expected in ("Summary", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details", "Value_Mismatches"):
+    for expected in ("Summary", "Unrecon_Summary", "Recon_and_Unrecon_Details", "Value_Mismatches"):
         assert expected in names, f"Expected sheet '{expected}' not found in {names}"
     # Detail sheet is named after the profile (max 31 chars)
-    assert any(n not in ("Summary", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details",
+    assert any(n not in ("Summary", "Unrecon_Summary", "Recon_and_Unrecon_Details",
                           "Value_Mismatches") for n in names), \
         "Expected a Detail / per-profile sheet in the workbook"
 
@@ -72,7 +72,7 @@ def test_detail_sheet_has_three_sections():
     """The per-account detail sheet must contain all three section headings."""
     wb = workbook_from(read_table(CSV_A, "a.csv"), read_table(CSV_B, "b.csv"))
     # Find the detail sheet (not one of the fixed-name sheets)
-    fixed = {"Summary", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details", "Value_Mismatches"}
+    fixed = {"Summary", "Unrecon_Summary", "Recon_and_Unrecon_Details", "Value_Mismatches"}
     detail_name = next(n for n in wb.sheetnames if n not in fixed)
     ws = wb[detail_name]
     all_values = {str(cell.value) for row in ws.iter_rows() for cell in row if cell.value}
@@ -84,7 +84,7 @@ def test_detail_sheet_has_three_sections():
 def test_detail_volume_comparison_counts_are_correct():
     """Volume Comparison section must show the correct row counts."""
     wb = workbook_from(read_table(CSV_A, "a.csv"), read_table(CSV_B, "b.csv"))
-    fixed = {"Summary", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details", "Value_Mismatches"}
+    fixed = {"Summary", "Unrecon_Summary", "Recon_and_Unrecon_Details", "Value_Mismatches"}
     detail_name = next(n for n in wb.sheetnames if n not in fixed)
     ws = wb[detail_name]
     numeric_values = {cell.value for row in ws.iter_rows() for cell in row
@@ -104,7 +104,7 @@ def test_unrecon_summary_sheet_exists_and_has_headers():
 
 def test_unreconciled_details_sheet_exists():
     wb = workbook_from(read_table(CSV_A, "a.csv"), read_table(CSV_B, "b.csv"))
-    assert "Reconciled_and_Unreconciled_Details" in wb.sheetnames
+    assert "Recon_and_Unrecon_Details" in wb.sheetnames
 
 
 def test_value_mismatches_sheet_exposes_side_by_side_delta():
@@ -160,7 +160,7 @@ def test_row_cap_limits_unreconciled_details():
     b = pl.DataFrame({"txn_id": ids_b, "amount": ["1.00"] * 20})
     result = compute_buckets(a, b, CONFIG)
     wb = load_workbook(io.BytesIO(build_workbook(result, {}, row_cap=5)))
-    ws = wb["Reconciled_and_Unreconciled_Details"]
+    ws = wb["Recon_and_Unrecon_Details"]
     all_values = [cell.value for row in ws.iter_rows() for cell in row if cell.value]
     assert any("Truncated" in str(v) for v in all_values)
 
