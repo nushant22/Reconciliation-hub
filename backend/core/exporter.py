@@ -1,12 +1,15 @@
 """Multi-sheet audit workbook generator (XlsxWriter).
 
 Sheet contract — fixed, because downstream Ops macros depend on it:
-    1. Summary              Account-wise reconciliation overview table
-    2. <Profile name>       Per-account detail: Volume, Matched Breakdown,
-                            Unmatched Breakdown (three labelled sections)
-    3. Unrecon_Summary      Success-only unreconciled transactions summary
-    4. Unreconciled_Details Full side-by-side raw rows for every unreconciled txn
-    5. Value_Mismatches     Side-by-side A / B / delta triage view (amount breaks)
+    1. Summary                              Account-wise reconciliation overview table
+    2. <Profile name>                       Per-account detail: Volume, Matched Breakdown,
+                                            Unmatched Breakdown (three labelled sections)
+    3. Unrecon_Summary                      Success-only unreconciled transactions summary
+    4. Reconciled_and_Unreconciled_Details  Reconciled (matched) and unreconciled (orphan) transactions:
+                                            - Section 1: Successfully Reconciled (exact matches + value mismatches)
+                                            - Section 2: Unreconciled Success-status transactions
+                                            - Section 3: Unreconciled Other-status transactions
+    5. Value_Mismatches                     Side-by-side A / B / delta triage view (amount breaks)
 
 `constant_memory` mode is used above a row threshold: XlsxWriter then flushes
 each row to disk instead of holding the whole workbook in RAM.
@@ -40,12 +43,12 @@ CONSTANT_MEMORY_THRESHOLD = 50_000
 
 # Sheet names in workbook order — the first four are the new reference-style
 # sheets; Value_Mismatches is retained for ops triage / downstream macros.
-SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Unreconciled_Details", "Value_Mismatches")
+SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Reconciled_and_Unreconciled_Details", "Value_Mismatches")
 
 # Kept for test-suite back-compat: tests that reference the old individual
 # data-dump sheets should migrate to the new names above, but the constants
 # are preserved so imports don't break.
-_LEGACY_DATA_SHEETS = ("Exact_Matches", "Value_Mismatches", "Orphans_FileA", "Orphans_FileB")
+_LEGACY_DATA_SHEETS = ("Exact_Matches", "Value_Mismatches", "Orphans_FileA", "Orphans_FileB", "Unreconciled_Details")
 
 
 # --------------------------------------------------------------------------- #
@@ -663,12 +666,41 @@ def _write_unrecon_summary(wb, ws, result: ReconResult, formats) -> None:
 
 def _write_unrecon_details(wb, ws, result: ReconResult, formats,
                             row_cap: int | None = None) -> None:
-    """Side-by-side raw transaction rows for every unreconciled entry."""
+    """Side-by-side raw transaction rows for reconciled (matched) and unreconciled (orphan) entries."""
     profile = result.config.profile_name
 
     ws.merge_range(0, 0, 0, 5,
-                   "Unreconciled Transactions — Success Only", formats["title"])
+                   "Reconciled and Unreconciled Transactions Details", formats["title"])
     ws.set_row(0, 26)
+
+    row = 2
+
+    # ── Section 1: Successfully Reconciled (Matched Transactions) ────────────
+    ws.write(row, 0, "SUCCESSFULLY RECONCILED TRANSACTIONS", formats["section"])
+    ws.merge_range(row, 0, row, 5, "SUCCESSFULLY RECONCILED TRANSACTIONS", formats["section"])
+    row += 1
+
+    # Combine exact matches and value mismatches into single matched dataset
+    matched_df = pl.concat([result.exact_matches, result.value_mismatches],
+                           how="diagonal_relaxed") if result.value_mismatches.height > 0 \
+                 else result.exact_matches
+
+    if matched_df.height > 0:
+        ws.write(row, 0, "Exact Matches & Value Mismatches (Reconciled)", formats["subsection"])
+        row += 1
+        row = _write_raw_frame(ws, row, matched_df, formats, row_cap, "hdr_green")
+        ws.write(row, 0,
+                 f"Total Reconciled: {matched_df.height} txn(s)",
+                 formats["data"])
+        row += 2
+    else:
+        ws.write(row, 0, "No reconciled transactions.", formats["data"])
+        row += 2
+
+    # ── Section 2: Unreconciled - Success Only ───────────────────────────────
+    ws.write(row, 0, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
+    ws.merge_range(row, 0, row, 5, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
+    row += 1
 
     status_a = _detect_status_col(result.orphans_a, "A")
     status_b = _detect_status_col(result.orphans_b, "B")
@@ -681,35 +713,57 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
     succ_a = _success_filter(result.orphans_a, status_a)
     succ_b = _success_filter(result.orphans_b, status_b)
 
-    row = 2
-
-    # ── CNP Exclusive (our orphans) ──────────────────────────────────────────
-    ws.write(row, 0, profile, formats["section"])
-    ws.merge_range(row, 0, row, max(succ_a.width - 1, 0),
-                   profile, formats["section"])
-    row += 1
-
-    # Sub-label
-    ws.write(row, 0, "CNP Exclusive", formats["subsection"])
+    # ── CNP Exclusive (our success orphans) ──────────────────────────────────
+    ws.write(row, 0, "CNP Exclusive - Success", formats["subsection"])
     row += 1
 
     row = _write_raw_frame(ws, row, succ_a, formats, row_cap, "hdr_orange")
 
-    count_a = succ_a.height if row_cap is None else min(succ_a.height, row_cap)
-    count_b = succ_b.height if row_cap is None else min(succ_b.height, row_cap)
-
     ws.write(row, 0,
-             f"CNP: {succ_a.height} txn(s)   {profile} Exclusive: {succ_b.height} txn(s)",
-             formats["warn"])
+             f"CNP Success Unreconciled: {succ_a.height} txn(s)",
+             formats["data"])
     row += 2
 
-    # ── Their Exclusive (partner orphans) ────────────────────────────────────
-    ws.write(row, 0, f"{profile} Exclusive", formats["section"])
-    ws.merge_range(row, 0, row, max(succ_b.width - 1, 0),
-                   f"{profile} Exclusive", formats["section"])
+    # ── Their Exclusive (partner success orphans) ────────────────────────────
+    ws.write(row, 0, f"{profile} Exclusive - Success", formats["subsection"])
     row += 1
 
-    row = _write_raw_frame(ws, row, succ_b, formats, row_cap, "hdr_red")
+    row = _write_raw_frame(ws, row, succ_b, formats, row_cap, "hdr_orange")
+
+    ws.write(row, 0,
+             f"{profile} Success Unreconciled: {succ_b.height} txn(s)",
+             formats["data"])
+    row += 2
+
+    # ── Section 3: Unreconciled - All Other Statuses ─────────────────────────
+    ws.write(row, 0, "UNRECONCILED TRANSACTIONS - OTHER STATUSES", formats["section"])
+    ws.merge_range(row, 0, row, 5, "UNRECONCILED TRANSACTIONS - OTHER STATUSES", formats["section"])
+    row += 1
+
+    def _non_success_filter(df: pl.DataFrame, status_col: str | None) -> pl.DataFrame:
+        if status_col and status_col in df.columns:
+            return df.filter(pl.col(status_col).cast(pl.Utf8).str.to_lowercase() != "success")
+        return pl.DataFrame()  # If no status column, return empty
+
+    other_a = _non_success_filter(result.orphans_a, status_a)
+    other_b = _non_success_filter(result.orphans_b, status_b)
+
+    # ── CNP Exclusive (our non-success orphans) ──────────────────────────────
+    ws.write(row, 0, "CNP Exclusive - Failed/Pending/Other", formats["subsection"])
+    row += 1
+
+    row = _write_raw_frame(ws, row, other_a, formats, row_cap, "hdr_red")
+
+    ws.write(row, 0,
+             f"CNP Other Status Unreconciled: {other_a.height} txn(s)",
+             formats["data"])
+    row += 2
+
+    # ── Their Exclusive (partner non-success orphans) ────────────────────────
+    ws.write(row, 0, f"{profile} Exclusive - Failed/Pending/Other", formats["subsection"])
+    row += 1
+
+    row = _write_raw_frame(ws, row, other_b, formats, row_cap, "hdr_red")
 
 
 def _write_raw_frame(
@@ -801,11 +855,14 @@ def build_workbook(
     """Render the workbook and return it as bytes.
 
     Sheets produced (in order):
-        1. Summary              — account-wise overview + run metadata
-        2. Detail               — per-account three-section layout
-        3. Unrecon_Summary      — success-only orphan counts
-        4. Unreconciled_Details — raw side-by-side unreconciled rows
-        5. Value_Mismatches     — amount-break triage sheet
+        1. Summary                              — account-wise overview + run metadata
+        2. Detail                               — per-account three-section layout
+        3. Unrecon_Summary                      — success-only orphan counts
+        4. Reconciled_and_Unreconciled_Details  — reconciled (matched) and unreconciled (orphan) transactions:
+                                                   * Successfully Reconciled (exact matches + value mismatches)
+                                                   * Unreconciled Success-status transactions
+                                                   * Unreconciled Other-status transactions
+        5. Value_Mismatches                     — amount-break triage sheet
 
     `row_cap` bounds the rows written per raw-data sheet.
     """
@@ -845,8 +902,8 @@ def build_workbook(
     ws.set_tab_color(WARNING_CLR)
     _write_unrecon_summary(wb, ws, result, fmts)
 
-    # 4. Unreconciled_Details
-    ws = wb.add_worksheet("Unreconciled_Details")
+    # 4. Reconciled_and_Unreconciled_Details
+    ws = wb.add_worksheet("Reconciled_and_Unreconciled_Details")
     ws.set_tab_color(DANGER_CLR)
     _write_unrecon_details(wb, ws, result, fmts, row_cap)
 
