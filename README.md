@@ -174,6 +174,26 @@ docker run -p 8080:8080 recon-engine
 - `RECON_LOG_LEVEL` — Logging verbosity (DEBUG, INFO, WARNING, ERROR)
 - `RECON_AUDIT_DB` — Path to SQLite audit database (default: `recon_audit.db`)
 
+## Dashboard Feature
+
+**NEW:** Multi-account reconciliation dashboard generator
+
+Generate consolidated dashboards from multiple reconciliation outputs showing overall performance, per-account metrics, and detailed breakdowns.
+
+**Quick Start:**
+```bash
+streamlit run app.py → Dashboard → Upload files → Generate
+```
+
+**Key Features:**
+- Aggregates multiple account reconciliations
+- Auto-detects account names from filenames
+- Supports Excel (.xlsx) and CSV (.zip) formats
+- Color-coded status flags (OK/Review)
+- Professional formatted Excel output
+
+**See [DASHBOARD.md](DASHBOARD.md) for complete documentation.**
+
 ## Extending
 
 Add a partner to `backend/profiles/company_schemas.json`; the UI picks it up on reload. If a
