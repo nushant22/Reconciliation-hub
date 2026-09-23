@@ -5,11 +5,12 @@ Sheet contract — fixed, because downstream Ops macros depend on it:
     2. <Profile name>                       Per-account detail: Volume, Matched Breakdown,
                                             Unmatched Breakdown (three labelled sections)
     3. Unrecon_Summary                      Success-only unreconciled transactions summary
-    4. Recon_and_Unrecon_Details            Reconciled (matched) and unreconciled (orphan) transactions:
-                                            - Section 1: Successfully Reconciled (exact matches + value mismatches)
-                                            - Section 2: Unreconciled Success-status transactions
-                                            - Section 3: Unreconciled Other-status transactions
-    5. Value_Mismatches                     Side-by-side A / B / delta triage view (amount breaks)
+    4. Reconciled_Details                   Successfully reconciled (matched) transactions:
+                                            - Exact matches + value mismatches
+    5. Unreconciled_Details                 Unreconciled (orphan) transactions:
+                                            - Section 1: Unreconciled Success-status transactions
+                                            - Section 2: Unreconciled Other-status transactions
+    6. Value_Mismatches                     Side-by-side A / B / delta triage view (amount breaks)
 
 `constant_memory` mode is used above a row threshold: XlsxWriter then flushes
 each row to disk instead of holding the whole workbook in RAM.
@@ -41,9 +42,9 @@ LIGHT_YELLOW = "#FEF3C7"
 #: Above this many rows in a single sheet, switch to streaming writes.
 CONSTANT_MEMORY_THRESHOLD = 50_000
 
-# Sheet names in workbook order — the first four are the new reference-style
+# Sheet names in workbook order — the first five are the new reference-style
 # sheets; Value_Mismatches is retained for ops triage / downstream macros.
-SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Recon_and_Unrecon_Details", "Value_Mismatches")
+SHEET_ORDER = ("Summary", "Detail", "Unrecon_Summary", "Reconciled_Details", "Unreconciled_Details", "Value_Mismatches")
 
 # Kept for test-suite back-compat: tests that reference the old individual
 # data-dump sheets should migrate to the new names above, but the constants
@@ -661,21 +662,19 @@ def _write_unrecon_summary(wb, ws, result: ReconResult, formats) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Sheet 4 — Unreconciled_Details
+# Sheet 4 — Reconciled_Details
 # --------------------------------------------------------------------------- #
 
-def _write_unrecon_details(wb, ws, result: ReconResult, formats,
-                            row_cap: int | None = None) -> None:
-    """Side-by-side raw transaction rows for reconciled (matched) and unreconciled (orphan) entries."""
-    profile = result.config.profile_name
-
+def _write_reconciled_details(wb, ws, result: ReconResult, formats,
+                               row_cap: int | None = None) -> None:
+    """Raw transaction rows for successfully reconciled (matched) entries."""
     ws.merge_range(0, 0, 0, 5,
-                   "Reconciled and Unreconciled Transaction Details", formats["title"])
+                   "Reconciled Transaction Details", formats["title"])
     ws.set_row(0, 26)
 
     row = 2
 
-    # ── Section 1: Successfully Reconciled (Matched Transactions) ────────────
+    # ── Successfully Reconciled (Matched Transactions) ────────────────────────
     ws.write(row, 0, "SUCCESSFULLY RECONCILED TRANSACTIONS", formats["section"])
     ws.merge_range(row, 0, row, 5, "SUCCESSFULLY RECONCILED TRANSACTIONS", formats["section"])
     row += 1
@@ -692,15 +691,26 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
         ws.write(row, 0,
                  f"Total Reconciled: {matched_df.height} txn(s)",
                  formats["data"])
-        row += 2
     else:
         ws.write(row, 0, "No reconciled transactions.", formats["data"])
-        row += 2
 
-    # ── Section 2: Unreconciled - Success Only ───────────────────────────────
-    ws.write(row, 0, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
-    ws.merge_range(row, 0, row, 5, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
-    row += 1
+    ws.freeze_panes(1, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Sheet 5 — Unreconciled_Details
+# --------------------------------------------------------------------------- #
+
+def _write_unreconciled_details(wb, ws, result: ReconResult, formats,
+                                 row_cap: int | None = None) -> None:
+    """Raw transaction rows for unreconciled (orphan) entries."""
+    profile = result.config.profile_name
+
+    ws.merge_range(0, 0, 0, 5,
+                   "Unreconciled Transaction Details", formats["title"])
+    ws.set_row(0, 26)
+
+    row = 2
 
     status_a = _detect_status_col(result.orphans_a, "A")
     status_b = _detect_status_col(result.orphans_b, "B")
@@ -710,8 +720,20 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
             return df.filter(pl.col(status_col).cast(pl.Utf8).str.to_lowercase() == "success")
         return df
 
+    def _non_success_filter(df: pl.DataFrame, status_col: str | None) -> pl.DataFrame:
+        if status_col and status_col in df.columns:
+            return df.filter(pl.col(status_col).cast(pl.Utf8).str.to_lowercase() != "success")
+        return pl.DataFrame()  # If no status column, return empty
+
     succ_a = _success_filter(result.orphans_a, status_a)
     succ_b = _success_filter(result.orphans_b, status_b)
+    other_a = _non_success_filter(result.orphans_a, status_a)
+    other_b = _non_success_filter(result.orphans_b, status_b)
+
+    # ── Section 1: Unreconciled - Success Only ───────────────────────────────
+    ws.write(row, 0, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
+    ws.merge_range(row, 0, row, 5, "UNRECONCILED TRANSACTIONS - SUCCESS STATUS", formats["section"])
+    row += 1
 
     # ── CNP Exclusive (our success orphans) ──────────────────────────────────
     ws.write(row, 0, "CNP Exclusive - Success", formats["subsection"])
@@ -735,18 +757,10 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
              formats["data"])
     row += 2
 
-    # ── Section 3: Unreconciled - All Other Statuses ─────────────────────────
+    # ── Section 2: Unreconciled - All Other Statuses ─────────────────────────
     ws.write(row, 0, "UNRECONCILED TRANSACTIONS - OTHER STATUSES", formats["section"])
     ws.merge_range(row, 0, row, 5, "UNRECONCILED TRANSACTIONS - OTHER STATUSES", formats["section"])
     row += 1
-
-    def _non_success_filter(df: pl.DataFrame, status_col: str | None) -> pl.DataFrame:
-        if status_col and status_col in df.columns:
-            return df.filter(pl.col(status_col).cast(pl.Utf8).str.to_lowercase() != "success")
-        return pl.DataFrame()  # If no status column, return empty
-
-    other_a = _non_success_filter(result.orphans_a, status_a)
-    other_b = _non_success_filter(result.orphans_b, status_b)
 
     # ── CNP Exclusive (our non-success orphans) ──────────────────────────────
     ws.write(row, 0, "CNP Exclusive - Failed/Pending/Other", formats["subsection"])
@@ -764,6 +778,12 @@ def _write_unrecon_details(wb, ws, result: ReconResult, formats,
     row += 1
 
     row = _write_raw_frame(ws, row, other_b, formats, row_cap, "hdr_red")
+
+    ws.write(row, 0,
+             f"{profile} Other Status Unreconciled: {other_b.height} txn(s)",
+             formats["data"])
+
+    ws.freeze_panes(1, 0)
 
 
 def _write_raw_frame(
@@ -798,7 +818,7 @@ def _write_raw_frame(
 
 
 # --------------------------------------------------------------------------- #
-# Sheet 5 — Value_Mismatches (retained for triage / downstream macros)
+# Sheet 6 — Value_Mismatches (retained for triage / downstream macros)
 # --------------------------------------------------------------------------- #
 
 def _write_value_mismatches(wb, ws, df: pl.DataFrame, formats,
@@ -858,11 +878,11 @@ def build_workbook(
         1. Summary                              — account-wise overview + run metadata
         2. Detail                               — per-account three-section layout
         3. Unrecon_Summary                      — success-only orphan counts
-        4. Recon_and_Unrecon_Details            — reconciled (matched) and unreconciled (orphan) transactions:
-                                                   * Successfully Reconciled (exact matches + value mismatches)
+        4. Reconciled_Details                   — successfully reconciled (matched) transactions
+        5. Unreconciled_Details                 — unreconciled (orphan) transactions:
                                                    * Unreconciled Success-status transactions
                                                    * Unreconciled Other-status transactions
-        5. Value_Mismatches                     — amount-break triage sheet
+        6. Value_Mismatches                     — amount-break triage sheet
 
     `row_cap` bounds the rows written per raw-data sheet.
     """
@@ -915,16 +935,25 @@ def build_workbook(
         log.error(f"Failed to create 'Unrecon_Summary' worksheet: {e}")
         raise
 
-    # 4. Recon_and_Unrecon_Details (shortened to fit 31-char Excel limit)
+    # 4. Reconciled_Details
     try:
-        ws = wb.add_worksheet("Recon_and_Unrecon_Details")
-        ws.set_tab_color(DANGER_CLR)
-        _write_unrecon_details(wb, ws, result, fmts, row_cap)
+        ws = wb.add_worksheet("Reconciled_Details")
+        ws.set_tab_color(SUCCESS_CLR)
+        _write_reconciled_details(wb, ws, result, fmts, row_cap)
     except Exception as e:
-        log.error(f"Failed to create 'Recon_and_Unrecon_Details' worksheet: {e}")
+        log.error(f"Failed to create 'Reconciled_Details' worksheet: {e}")
         raise
 
-    # 5. Value_Mismatches
+    # 5. Unreconciled_Details
+    try:
+        ws = wb.add_worksheet("Unreconciled_Details")
+        ws.set_tab_color(DANGER_CLR)
+        _write_unreconciled_details(wb, ws, result, fmts, row_cap)
+    except Exception as e:
+        log.error(f"Failed to create 'Unreconciled_Details' worksheet: {e}")
+        raise
+
+    # 6. Value_Mismatches
     try:
         ws = wb.add_worksheet("Value_Mismatches")
         ws.set_tab_color(WARNING_CLR)
@@ -935,7 +964,7 @@ def build_workbook(
 
     wb.close()
     payload = buffer.getvalue()
-    log.info("workbook built: %d bytes, %d sheets", len(payload), 5)
+    log.info("workbook built: %d bytes, %d sheets", len(payload), 6)
     return payload
 
 
