@@ -241,6 +241,16 @@ def main() -> None:
     # ── Step 3 · Execute ──────────────────────────────────────────────────────
     st.markdown('<div class="step">Step 3 · Execute</div>', unsafe_allow_html=True)
 
+    # Output format selector
+    output_format = st.radio(
+        "Output Format",
+        options=["CSV (Lightweight, recommended)", "Excel (Legacy)"],
+        index=0,
+        horizontal=True,
+        help="CSV: Faster, smaller files in a ZIP archive. Excel: Traditional multi-sheet workbook."
+    )
+    format_type = "csv" if "CSV" in output_format else "excel"
+
     if not st.button("Run Reconciliation", type="primary"):
         return
 
@@ -260,6 +270,7 @@ def main() -> None:
                 name_right=up_right.name,
                 operator=operator,
                 row_cap=row_cap,
+                output_format=format_type,
             )
     except ReconError as exc:
         st.error(str(exc))
@@ -309,11 +320,19 @@ def main() -> None:
     st.markdown('<div class="step">Step 5 · Triage & download</div>',
                 unsafe_allow_html=True)
 
+    # Determine download button text and MIME type based on format
+    if format_type == "excel":
+        download_label = "⬇ Download multi-sheet workbook (.xlsx)"
+        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        download_label = "⬇ Download CSV archive (.zip)"
+        mime_type = "application/zip"
+
     st.download_button(
-        "⬇ Download CSV archive (.zip)",
+        download_label,
         data=outcome.workbook,
         file_name=outcome.filename,
-        mime="application/zip",
+        mime=mime_type,
     )
 
     tabs = st.tabs([

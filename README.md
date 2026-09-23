@@ -1,9 +1,9 @@
 # eSewa Reconciliation Engine (Ops MVP)
 
 Upload File A (internal ledger) and File B (partner/bank/aggregator statement), pick or
-override a mapping, and download a multi-file CSV archive. Built for the
-reconciliation desk, not for a demo: the failure modes it defends against are the ones
-that actually eat an analyst's morning.
+override a mapping, and download either a lightweight CSV archive or traditional Excel workbook. 
+Built for the reconciliation desk, not for a demo: the failure modes it defends against are 
+the ones that actually eat an analyst's morning.
 
 ```
 pip install -r requirements.txt
@@ -23,7 +23,7 @@ pytest
 | Real breaks are never hidden | Unparseable amount vs. a number is a mismatch, not a match. Junk parses to `null`, never `0.0` — a zero is a financial claim, a null is a data defect. |
 | Duplicate keys reconcile honestly | Repeated references match occurrence-by-occurrence (1st↔1st, 2nd↔2nd). Only surplus occurrences fall out as orphans — that is a real quantity break, not an artefact. |
 | Blank keys never match | Two empty references are not evidence of the same transaction; both sides are forced to orphans and counted as a warning. |
-| Truncation is visible | A row cap stamps the Summary CSV **and** individual data files. A quietly shortened audit file is worse than a slow one. |
+| Truncation is visible | A row cap stamps the summary **and** individual data files. A quietly shortened audit file is worse than a slow one. |
 
 ## Layout
 
@@ -36,13 +36,13 @@ esewa-recon-engine/
 │   │   ├── loader.py               encoding + delimiter + banner-row resilience
 │   │   ├── sanitizer.py            key, money and date normalisation (pure exprs)
 │   │   ├── matcher.py              Polars join/anti-join bucketing engine
-│   │   ├── csv_exporter.py         Multi-file CSV archive generator
-│   │   ├── exporter.py             Legacy Excel workbook generator (retained)
+│   │   ├── csv_exporter.py         Multi-file CSV archive generator (default)
+│   │   ├── exporter.py             Multi-sheet Excel workbook generator (legacy)
 │   │   ├── audit.py                SQLite run log + idempotency probe
 │   │   ├── profiles.py             partner preset loading
 │   │   └── pipeline.py             the only entry point a front-end needs
 │   ├── profiles/company_schemas.json
-│   └── tests/                      Tests: sanitizer, matcher, exporter, E2E
+│   └── tests/                      Tests: sanitizer, matcher, exporters, E2E
 └── scripts/generate_sample_data.py
 ```
 
@@ -91,14 +91,18 @@ already waited for.
 
 ## Performance
 
-200,000 × 198,006 rows on a modest container: **matching 1.3s**, end-to-end ~8s. The CSV 
-export is significantly faster and lighter than Excel workbook generation. If a batch ever 
-outgrows RAM entirely, the ingestion seam in `loader.py` is where `pl.scan_csv` replaces 
-`pl.read_csv` — nothing downstream changes.
+200,000 × 198,006 rows on a modest container: **matching 1.3s**, CSV export ~8s, Excel export ~14.7s. 
+CSV is the recommended default for most use cases. The Excel tail is workbook serialization (a 188k-row 
+exact-match sheet is ~12MB), which is why `RECON_SHEET_ROW_CAP` exists and why XlsxWriter switches to 
+`constant_memory` streaming above 50k rows per sheet. If a batch ever outgrows RAM entirely, the 
+ingestion seam in `loader.py` is where `pl.scan_csv` replaces `pl.read_csv` — nothing downstream changes.
 
 ### Output Format
 
-The system outputs a **ZIP archive** containing 8 CSV files:
+The system supports **two output formats** (user-selectable in the UI):
+
+#### CSV Archive (Recommended - Default)
+A **ZIP archive** containing 8 CSV files:
 - **summary.csv** — Account-wise overview + run metadata
 - **detail.csv** — Three-section reconciliation report (volume, matched, unmatched)
 - **unrecon_summary.csv** — Success-only unreconciled transaction counts
@@ -108,11 +112,22 @@ The system outputs a **ZIP archive** containing 8 CSV files:
 - **orphans_a.csv** — Transactions only in File A
 - **orphans_b.csv** — Transactions only in File B
 
-**Benefits of CSV over Excel:**
+**Benefits of CSV:**
 - **Lightweight:** 40-60% smaller file size
-- **Faster processing:** No Excel formatting/styling overhead
+- **Faster processing:** No Excel formatting/styling overhead (~8s vs ~14.7s)
 - **Better compatibility:** Works with any spreadsheet app, database import tools, or scripts
 - **Lower memory footprint:** Reduced server load on Streamlit Cloud
+- **Individual access:** Open only the files you need
+
+#### Excel Workbook (Legacy)
+A traditional **multi-sheet Excel workbook** (.xlsx) with 5 sheets:
+- Summary, Detail (per-account), Unrecon_Summary, Unreconciled_Details, Value_Mismatches
+
+**When to use Excel:**
+- Downstream processes expect .xlsx format
+- Need formatted, color-coded worksheets
+- Macros or formulas reference specific sheet structures
+- Organizational policy requires Excel output
 
 ### Handling Large Files on Streamlit Community Cloud
 
@@ -120,14 +135,16 @@ The system outputs a **ZIP archive** containing 8 CSV files:
 
 - The app automatically caps output files at **50,000 rows** to prevent memory exhaustion
 - All rows are still processed for matching statistics and counts
-- Only the detail CSVs (exact matches, mismatches, orphans) are truncated in the output
-- A truncation notice appears in the summary.csv file
+- Only the detail files (exact matches, mismatches, orphans) are truncated in the output
+- A truncation notice appears in the summary (CSV or Excel)
+- **Tip:** Use CSV format for better memory efficiency with large datasets
 
 **Best Practices for Large Datasets:**
-1. **Split by time period** — Reconcile monthly batches instead of yearly files
-2. **Filter before export** — Remove test/cancelled transactions in your source system
-3. **Expect 1-3 minutes** for files with 500k-1M rows (faster than Excel output)
-4. **Consider self-hosting** for regular multi-million row reconciliations (see Deployment Options below)
+1. **Choose CSV format** — 40-60% smaller output, faster processing
+2. **Split by time period** — Reconcile monthly batches instead of yearly files
+3. **Filter before export** — Remove test/cancelled transactions in your source system
+4. **Expect 1-3 minutes** for CSV, 2-5 minutes for Excel with 500k-1M rows
+5. **Consider self-hosting** for regular multi-million row reconciliations (see Deployment Options below)
 
 **If the app crashes:**
 - Reduce file size by splitting data into smaller chunks

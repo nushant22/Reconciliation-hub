@@ -148,11 +148,12 @@ def test_row_cap_limits_data_files():
 # --------------------------------------------------------------------------- #
 
 def test_pipeline_produces_zip_archive_and_audit_row(tmp_path):
-    """Pipeline must produce a ZIP archive (not Excel) and record to audit DB."""
+    """Pipeline must produce a ZIP archive (CSV format) and record to audit DB."""
     db = str(tmp_path / "audit.db")
     outcome = run_reconciliation(
         file_a=CSV_A, name_a="a.csv", file_b=CSV_B, name_b="b.csv",
         config=CONFIG, operator="ops.analyst", db_path=db,
+        output_format="csv",
     )
     
     # Verify it's a ZIP file (starts with PK signature)
@@ -167,3 +168,20 @@ def test_pipeline_produces_zip_archive_and_audit_row(tmp_path):
     files = archive.namelist()
     assert "summary.csv" in files
     assert "exact_matches.csv" in files
+
+
+def test_pipeline_produces_excel_workbook_and_audit_row(tmp_path):
+    """Pipeline must produce an Excel workbook when format is set to excel."""
+    db = str(tmp_path / "audit.db")
+    outcome = run_reconciliation(
+        file_a=CSV_A, name_a="a.csv", file_b=CSV_B, name_b="b.csv",
+        config=CONFIG, operator="ops.analyst", db_path=db,
+        output_format="excel",
+    )
+    
+    # Verify it's an Excel file (starts with PK signature, Excel files are ZIP-based)
+    assert outcome.workbook[:2] == b"PK", "Output should be an Excel workbook"
+    assert outcome.filename.endswith(".xlsx"), "Filename should end with .xlsx"
+    
+    # Verify the result counts
+    assert outcome.result.counts.exact_matches == 1

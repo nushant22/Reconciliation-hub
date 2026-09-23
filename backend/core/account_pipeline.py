@@ -25,6 +25,7 @@ from .account_config import (
 )
 from .config import LoadSpec
 from .csv_exporter import build_csv_archive
+from .exporter import build_workbook
 from .loader import read_table
 from .matcher import ReconResult, compute_buckets
 from .pipeline import RunOutcome, _slug  # reuse the slug helper & RunOutcome dataclass
@@ -42,6 +43,7 @@ def run_account_reconciliation(
     operator: str = "unknown",
     db_path: str = audit.DEFAULT_DB,
     row_cap: int | None = None,
+    output_format: str = "csv",
 ) -> RunOutcome:
     """Execute a full account-config–driven reconciliation.
 
@@ -93,22 +95,25 @@ def run_account_reconciliation(
     # ── 6. Export ─────────────────────────────────────────────────────────────
     stamp    = started.strftime("%Y%m%d-%H%M%S")
     run_id   = f"run-{stamp}-{schema_hash[:6]}"
-    filename = f"recon_{_slug(account.output_prefix)}_{stamp}.zip"
 
     if row_cap is None and os.environ.get("RECON_SHEET_ROW_CAP"):
         row_cap = int(os.environ["RECON_SHEET_ROW_CAP"])
 
-    workbook = build_csv_archive(
-        result,
-        {
-            "generated_at": started.isoformat(timespec="seconds"),
-            "run_id": run_id,
-            "operator": operator,
-            "file_a": name_left,
-            "file_b": name_right,
-        },
-        row_cap=row_cap,
-    )
+    meta = {
+        "generated_at": started.isoformat(timespec="seconds"),
+        "run_id": run_id,
+        "operator": operator,
+        "file_a": name_left,
+        "file_b": name_right,
+    }
+
+    # Generate output based on format choice
+    if output_format.lower() == "excel":
+        filename = f"recon_{_slug(account.output_prefix)}_{stamp}.xlsx"
+        workbook = build_workbook(result, meta, row_cap=row_cap)
+    else:  # default to CSV
+        filename = f"recon_{_slug(account.output_prefix)}_{stamp}.zip"
+        workbook = build_csv_archive(result, meta, row_cap=row_cap)
 
     # ── 7. Audit ──────────────────────────────────────────────────────────────
     audit.record_run(

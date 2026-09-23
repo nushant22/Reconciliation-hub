@@ -18,6 +18,7 @@ import polars as pl
 from . import audit
 from .config import LoadSpec, MatchConfig
 from .csv_exporter import build_csv_archive
+from .exporter import build_workbook
 from .loader import read_table
 from .matcher import ReconResult, compute_buckets
 
@@ -45,6 +46,7 @@ def run_reconciliation(
     operator: str = "unknown",
     db_path: str = audit.DEFAULT_DB,
     row_cap: int | None = None,
+    output_format: str = "csv",
 ) -> RunOutcome:
     """Execute a full reconciliation and return the workbook plus audit handle."""
     started = datetime.now(timezone.utc)
@@ -61,22 +63,25 @@ def run_reconciliation(
 
     stamp = started.strftime("%Y%m%d-%H%M%S")
     run_id = f"run-{stamp}-{schema_hash[:6]}"
-    filename = f"recon_{_slug(config.profile_name)}_{stamp}.zip"
-
+    
     if row_cap is None and os.environ.get("RECON_SHEET_ROW_CAP"):
         row_cap = int(os.environ["RECON_SHEET_ROW_CAP"])
-
-    workbook = build_csv_archive(
-        result,
-        {
-            "generated_at": started.isoformat(timespec="seconds"),
-            "run_id": run_id,
-            "operator": operator,
-            "file_a": name_a,
-            "file_b": name_b,
-        },
-        row_cap=row_cap,
-    )
+    
+    meta = {
+        "generated_at": started.isoformat(timespec="seconds"),
+        "run_id": run_id,
+        "operator": operator,
+        "file_a": name_a,
+        "file_b": name_b,
+    }
+    
+    # Generate output based on format choice
+    if output_format.lower() == "excel":
+        filename = f"recon_{_slug(config.profile_name)}_{stamp}.xlsx"
+        workbook = build_workbook(result, meta, row_cap=row_cap)
+    else:  # default to CSV
+        filename = f"recon_{_slug(config.profile_name)}_{stamp}.zip"
+        workbook = build_csv_archive(result, meta, row_cap=row_cap)
 
     audit.record_run(
         {
