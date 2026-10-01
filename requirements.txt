@@ -5,4 +5,6 @@ openpyxl>=3.1         # .xlsx reading for input files
 XlsxWriter>=3.2       # Excel workbook generation (optional, for legacy output)
 streamlit>=1.40       # operations UI
 pytest>=8.0           # test suite
-# xlrd>=2.0           # uncomment only if legacy .xls partner files are in scope
+PyYAML>=6.0           # Airlines page: reads backend/airlines/config.yaml
+xlrd>=2.0             # legacy .xls exports (Airlines page)
+lxml>=5.0             # .xls files that are really HTML tables (Airlines page; a built-in fallback exists)

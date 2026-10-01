@@ -201,3 +201,37 @@ partner needs a genuine pre-match transform (e.g. stripping an `FP-`/`FT-` prefi
 reference before joining, as the legacy Fonepay mapping does), add it as an expression in
 `sanitizer.py` and reference it from the profile — keep it out of the UI layer so the cron
 path and the web path stay identical.
+
+---
+
+## Airlines reconciliation (sidebar → **Airlines**)
+
+Reconciles airline sales files against the eSewa and Fonepay ledgers by ticket number — the
+former standalone `code.zip` script, now a page of this app.
+
+1. Open **Airlines** in the sidebar (below *Dashboard*).
+2. Drop the day's files in together — eSewa ledger, Fonepay ledger, Shree, Yeti, Buddha, and
+   optionally the eSewa Refund and Fonepay Refund reports. File names don't matter; each file is
+   recognised from its column headers, and the page shows what it found.
+3. **Run Reconciliation** → one Excel report per airline (Summary, Recon and Unrecon sheets,
+   plus Buddha's eSewa/Fonepay Refund Recon and Refund Unrecon), downloadable individually or as a zip.
+
+**All rules live in `backend/airlines/config.yaml`** (names, header rows, match keys, amount
+columns, report fields, prep switches, refund/cashback/aging settings, state files). You can
+view, edit and save it from the page (*View / edit config.yaml*), or edit the file directly.
+
+Carry-forward state (still-pending refunds, Fonepay RRN → ticket history) is kept between runs in
+`airlines_state/` (override with the `AIRLINES_STATE_DIR` environment variable). If config.yaml
+still has the original Windows paths (`C:/ReconState/...`) they are used as-is on Windows, and
+mapped into `airlines_state/` on other systems.
+
+```
+backend/airlines/          engine.py (pipeline), prep.py, loader.py, matcher.py,
+                           refund_state.py, file_mapper.py, report.py, config.yaml
+pages/2_Airlines.py        the Streamlit page
+python -m backend.airlines.engine <input_dir> [output_dir]              # command-line run
+python -m backend.airlines.lookup_state --ticket 32386504               # state diagnostics
+python -m backend.airlines.backfill_fonepay_rrn <file-or-folder>        # seed RRN history
+python -m backend.tests.airlines_fixtures sample_airlines_data          # demo input files
+pytest backend/tests/test_airlines.py backend/tests/test_airlines_e2e.py
+```

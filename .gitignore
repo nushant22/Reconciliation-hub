@@ -30,3 +30,9 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Airlines reconciliation: carry-forward state + CLI scratch folders
+airlines_state/
+airlines_input/
+airlines_output/
+.pytest_cache/

@@ -1,0 +1,242 @@
+# ============================================================
+# AIRLINES RECONCILIATION CONFIG
+# Used by the "Airlines" page in the app (and the command-line run).
+# Edit this file - or use "View / edit config.yaml" on the Airlines page -
+# to rename sources, change header rows, match keys, amount columns,
+# report fields, prep switches and refund/cashback/aging rules.
+# Do NOT edit the .py files unless you know what you're doing.
+# (Where comments below mention the input/ folder, read that as
+#  "the files you upload on the Airlines page".)
+# ============================================================
+
+names:
+  ledger_a: "eSewa"
+  ledger_b: "Fonepay"
+  airline_1: "Shree Airlines"
+  airline_2: "Yeti Airlines"     # the dedup file
+  airline_3: "Buddha Airlines"     # the two-row header (NPR/USD) file
+  cancellation_report: "eSewa Refund"   # optional 7th file - ledger-side refund/cancellation log
+  fonepay_refund: "Fonepay Refund"   # optional 8th file - Fonepay refund log
+
+# Which sheet to read for sources that are multi-sheet workbooks.
+# Leave a source out (or set to null) to use the first sheet, as before.
+sheet_names:
+  airline_3: "Agent Sales Report"   # main recon data lives on this sheet
+
+# Header row(s) - 1-indexed, matching what you see in Excel.
+# airline_3 has TWO header rows that combine into one logical header.
+header_rows:
+  ledger_a: 2   # eSewa now contains everything in one file (old "eSewa 2" is redundant, no longer used)
+  ledger_b: 1
+  airline_1: 1
+  airline_2: 2
+  airline_3: [6, 7]
+  cancellation_report: 2            # header row in the cancellation report
+  fonepay_refund: 1                 # header row in Fonepay refund report
+
+# Column used to match ticket numbers across files
+match_keys:
+  ledger_a: "ticket_number"     # every ticket is now its own row (no more comma-joined explode)
+  ledger_b: "Ticket No"
+  airline_1: "Ticket"
+  airline_2: "Ticket"
+  airline_3: "TICKET"
+  cancellation_report: "Ticket Number"     # column used to match against Airline 3's Refunds sheet
+  fonepay_refund: "RETRIEVAL_REFERENCE_NUMBER" # looked up against ledger_b to retrieve Ticket No
+
+# Amount column used for Recon Amount / Unrecon Amount totals in Summary sheet
+amount_fields:
+  ledger_a: "Price Per Ticket"
+  ledger_b: "Total Fare"
+  airline_1: "Total Amount"      # computed field, Net + Comm
+  airline_2: "Net Total"
+  airline_3: "NET"                # NPR NET only
+  cancellation_report: "Price Per Ticket"   # per-refunded-ticket amount
+  fonepay_refund: "REFUND_AMOUNT"
+
+# Fields to show in the report, per source, using column names or Excel column letters.
+report_fields:
+  ledger_a: "Txn_Date, Parent_Txn_code, child_txn, Sector, ticket_number, Outbound_PNR_No, Outbound_Departure_Date, Price Per Ticket, Status"
+  ledger_b: "Recorded Date, Retrieval Reference No, Sector, Flight Date, Flight No, PNR No, Ticket No, Passenger, Total Fare, Status"
+  airline_1: "Issue Date, Sector, Flight Date, Flight No, Ticket, PAX Name, Net, Comm, Total Amount"
+  airline_2: "Issue, From, To, Flight, Date, Ticket, Passenger, Net Total"
+  airline_3: "ISSUE DATE, SECTOR, CLASS, TICKET, PAX NAME, FARE, FSC, NET"
+  refund_recon: ""
+  refund_unrecon: ""
+
+# NOTE on report_fields: because prep changes column order (splitting rows,
+# inserting Status columns, dropping $ / USD blocks), the exact letters above
+# are placeholders based on our discussion. Open one output file, check the
+# "Ledger A vs Airline 1" sheet header row, and adjust letters here anytime -
+# no need to touch the script itself.
+
+# ------------------------------------------------------------------
+# Refund cashback lookup (eSewa now contains everything in one file -
+# the old separate "eSewa 2" lookup file is redundant and no longer
+# used; this reads directly from the same ledger_a data).
+# For Agent-profile bookings, eSewa deducts+refunds a cashback amount
+# alongside the ticket refund. This looks up each refunded transaction's
+# Parent_Txn_code, and if that transaction's rows are tagged
+# full_refund/partial_refund AND the Profile is "Agent", splits the
+# transaction's Total_Cashback across the confirmed-refunded tickets the
+# same way Price Per Ticket is split (Total_Cashback / confirmed count).
+# Non-Agent profiles get no cashback (not applicable, not a data issue).
+# ------------------------------------------------------------------
+cashback_lookup:
+  enabled: true
+  source: "ledger_a"              # same eSewa file as the main ledger_a data - no separate file
+  txn_code_column: "Parent_Txn_code"
+  child_status_column: "Child_Status"
+  included_statuses: ["full_refund", "partial_refund"]
+  profile_column: "Profile"
+  agent_profile_value: "Agent"
+  cashback_amount_column: "Total_Cashback"
+
+# ------------------------------------------------------------------
+# Main recon (all airlines) always matches against COMPLETE eSewa rows
+# ONLY - uniformly, no per-airline exceptions. Reversed rows never enter
+# any airline's matched Recon pool. Instead, every airline's Unrecon
+# sheet gets a purely informational 'Reverted?' tag (see
+# tag_reverted_column in run_recon.py), built from THREE sources: eSewa
+# Ledger rows with Status == REVERSED, eSewa Refund entries, and Fonepay
+# Refund entries. Buddha additionally gets a 'Refund?' tag and its own
+# full Refund Recon/Unrecon/Cashback pipeline below, since it's the only
+# airline with its own embedded Refunds sheet to reconcile against.
+# ------------------------------------------------------------------
+
+prep:
+  ledger_a:
+    add_status: true   # Status is now derived from child_txn (see prep_ledger_a), not a flat constant
+    price_per_ticket_formula: true  # Txn_Amount / count of rows sharing the same Parent_Txn_code
+    # Column names for the new eSewa format. NOTE: eSewa has changed this
+    # export format before - if Price Per Ticket or Status ever come back
+    # wrong again, check these against the actual column headers first
+    # (console will also print a WARNING naming any missing column and
+    # listing what's actually there).
+    amount_column: "Txn_Amount"           # parent-level amount, repeats across duplicate rows
+    txn_code_column: "Parent_Txn_code"    # groups rows belonging to the same transaction (e.g. two-way trip)
+    child_txn_column: "child_txn"         # fallback only, used if child_status_column is ever missing
+    # Status is determined from Child_Status (the authoritative signal):
+    #   Child_Status == "N/A"                                   -> COMPLETE
+    #   Child_Status in reversed_status_values below             -> REVERSED
+    child_status_column: "Child_Status"
+    reversed_status_values: ["FULL_REFUND", "PARTIAL_REFUND", "REVERTED"]
+  ledger_b:
+    add_status: "COMPLETE"
+  airline_1:
+    drop_dollar_columns: true
+    add_total_amount: true        # Net + Comm
+  airline_2:
+    dedup_on_match_key: true
+    keep: "first"
+  airline_3:
+    keep_currency: "NPR"          # drop USD block
+
+# ------------------------------------------------------------------
+# Airline 3 refund check (adds a "Refund?" column to Unrecon 3)
+# Some Airline 3 tickets are sold and refunded the SAME day, so they
+# show up in the Agent Sales Report (main data) but were never really
+# outstanding - they just never had a ledger transaction to begin with.
+# This looks up each Unrecon-3 ticket in the same workbook's "Refunds"
+# sheet so you can tell those apart from genuine unreconciled tickets.
+# ------------------------------------------------------------------
+airline_3_refund_check:
+  enabled: true
+  sheet_name: "Refunds"
+  header_rows: [2, 3]         # merged 2-row header, same combine logic as the main sheet
+  ticket_column: "TICKET NO"
+
+# ------------------------------------------------------------------
+# Refund reconciliation (OPTIONAL 7th file: Cancellation Report)
+# Same prep as Ledger A (explode comma-joined Ticket Number into rows,
+# no price/status logic). Reconciled against Airline 3's Refunds sheet:
+# any Airline 3 Refunds ticket with NO matching Cancellation Report row
+# is flagged in "Refund Unrecon 3" - the airline says it was refunded
+# but the ledger side shows no cancellation for it.
+# If disabled or the file isn't dropped in input/, this step is skipped.
+# ------------------------------------------------------------------
+refund_reconciliation:
+  enabled: true
+  airline: "airline_3"
+  cancellation_source: "cancellation_report"   # matches names/header_rows/match_keys above
+  # extra columns (besides match_keys.cancellation_report) used just to help
+  # auto-detect this file among the files dropped in input/
+  signature_columns: ["Parent_txn_Code", "Services", "Status"]
+
+  # ------------------------------------------------------------------
+  # Back-dated refund handling: an airline refund initiated on day N may
+  # not show up as a cancellation on the ledger side until day N+1 or
+  # later. Since this pipeline runs on single-day files, an unmatched
+  # refund can't just be re-tried later in the SAME run - it's carried
+  # forward on disk (state_file) and re-checked against each following
+  # day's cancellation file until it matches or goes past the grace
+  # period below, at which point it's flagged "Overdue" instead of just
+  # "Pending" in the Refund Unrecon sheet.
+  # ------------------------------------------------------------------
+  # Column in the Airline 3 Refunds sheet holding the refund date.
+  # NOTE: 'ISSUE/RF' packs two dates as "ISSUE_DATE/REFUND_TIMESTAMP"
+  # (e.g. "2026-08-18/2026-07-30T12:42:18.970702") - the FIRST part
+  # (before the '/') is the refund date used for aging.
+  refund_date_column: "ISSUE/RF"
+  # Column in the Cancellation Report holding the cancellation date.
+  cancellation_date_column: "Txn_date"
+  # Column in the Airline 3 Refunds sheet holding the refund amount.
+  # NOTE: this is a DIFFERENT column from amount_fields.airline_3 ("NET")
+  # above - that's the main Agent Sales Report sheet's amount column; the
+  # Refunds sheet uses its own "REF" column instead.
+  refund_amount_column: "REF"
+  # Column in the Cancellation Report used to group tickets by transaction
+  # (rather than by raw line) when cross-checking against the airline's
+  # confirmed ticket list - correct even if a transaction is ever split
+  # across multiple lines. Confirmed: always exactly one line per
+  # txn_code today, so this only matters if that ever changes.
+  txn_code_column: "Parent_txn_Code"
+  # Unmatched refunds this many days old or less are "Pending" (normal
+  # settlement lag); older than this are "Overdue" (needs follow-up).
+  grace_period_days: 2
+  # Where the still-unmatched refunds get persisted between daily runs.
+  # IMPORTANT: use an ABSOLUTE path here, NOT a relative one - if you copy
+  # this whole script folder fresh each day, a relative path would resolve
+  # to a new (empty) location every time and silently lose the entire
+  # pending-refunds backlog. Point this at one fixed folder that you do
+  # NOT copy/recreate daily - e.g. create it once, outside your daily
+  # script folders, and leave it there permanently.
+  # Windows example: "C:/ReconState/pending_refunds.csv"
+  state_file: "C:/ReconState/pending_refunds.csv"
+
+# ------------------------------------------------------------------
+# Fonepay RRN -> Ticket No lookup history.
+# Fonepay's Refund file only has a Retrieval Reference Number (RRN), not
+# a ticket number - the ticket number gets looked up from Fonepay's own
+# Ledger. But a refund can post many days after the original transaction
+# (e.g. RRN created Aug 10, refunded Aug 16) - by then, Aug 10's
+# single-day Ledger file no longer exists to look up against. This
+# accumulates RRN->Ticket mappings across every day's run so the lookup
+# still works regardless of which day the original RRN was created on.
+# Same carry-forward principle as refund_reconciliation.state_file above,
+# just for reference data instead of unmatched transactions.
+# ------------------------------------------------------------------
+fonepay_rrn_lookup:
+  # IMPORTANT: same rule as refund_reconciliation.state_file above - use
+  # an ABSOLUTE path outside your daily-copied script folders, or the
+  # accumulated RRN history resets to empty every run.
+  state_file: "C:/ReconState/fonepay_rrn_lookup.csv"
+  # Column in Fonepay's Ledger holding the RRN (used to build the lookup).
+  ledger_b_rrn_column: "Retrieval Reference No"
+  # Column holding each transaction's own date - used by
+  # backfill_fonepay_rrn.py to preserve real historical dates when
+  # bulk-seeding the lookup table, so retention pruning stays accurate
+  # (a transaction from 2 months ago is correctly aged as 2 months old,
+  # not treated as if it happened today).
+  date_column: "Recorded Date"
+  # Which columns (besides the RRN key itself) get kept in the lookup
+  # table. Deliberately lean - this table is meant to accumulate for
+  # months, so only Ticket No is kept by default rather than all ~25
+  # Ledger B columns (Sector, Passenger, Flight Date, Fare, etc.) that the
+  # lookup never actually needs. date_column above is always kept too
+  # (added automatically) since it's needed for retention pruning.
+  lookup_fields: ["Ticket No"]
+  # RRN entries not seen again within this many days are pruned, to keep
+  # the lookup file from growing unbounded forever. Set this comfortably
+  # longer than your worst-case expected refund settlement lag.
+  retention_days: 180
