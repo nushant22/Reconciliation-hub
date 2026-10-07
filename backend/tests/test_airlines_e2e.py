@@ -15,6 +15,19 @@ from backend.tests.airlines_fixtures import build_sample_files
 def sample(tmp_path, monkeypatch):
     # isolate the carry-forward state so tests never touch real state
     monkeypatch.setattr(engine, "STATE_DIR", str(tmp_path / "state"))
+
+    # config.yaml uses Windows drive paths (C:/ReconState/...). On Windows
+    # those are used verbatim, bypassing STATE_DIR, so force bare file names.
+    _orig_resolve = engine.resolve_state_path
+
+    def _isolated_resolve(state_file):
+        if not state_file:
+            return None
+        name = os.path.basename(str(state_file).replace("\\", "/"))
+        return _orig_resolve(name)
+
+    monkeypatch.setattr(engine, "resolve_state_path", _isolated_resolve)
+
     folder = tmp_path / "in"
     paths = build_sample_files(str(folder))
     uploads = []
