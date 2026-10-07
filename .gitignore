@@ -7,32 +7,62 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.egg
 
 # Virtual environments
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
 # Database
 *.db
 *.sqlite3
+recon_audit.db
 
 # Environment variables and secrets
 .env
+.env.local
 .streamlit/secrets.toml
 
 # OS
 .DS_Store
 Thumbs.db
+*.log
 
 # Airlines reconciliation: carry-forward state + CLI scratch folders
 airlines_state/
 airlines_input/
 airlines_output/
+
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Sample/Demo data
+sample_data/
+test_output/
+*.csv
+*.xlsx
+*.xls
+*.zip
+!recon_demo_workbook.xlsx
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json

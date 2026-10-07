@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Database and state (mount these as volumes)
+*.db
+*.sqlite3
+airlines_state/
+airlines_input/
+airlines_output/
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Test cache
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!README.md
+
+# Sample data
+sample_data/
+recon_demo_workbook.xlsx

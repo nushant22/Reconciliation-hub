@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  recon-engine:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist state and database across restarts
+      - ./airlines_state:/app/airlines_state
+      - ./recon_audit.db:/app/recon_audit.db
+      # Mount secrets (copy secrets.toml.example to secrets.toml first)
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    environment:
+      - RECON_SHEET_ROW_CAP=50000
+      - RECON_LOG_LEVEL=INFO
+      - AIRLINES_STATE_DIR=/app/airlines_state
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
