@@ -386,7 +386,7 @@ def prepare_side(df: pl.DataFrame, side_cfg: SideConfig) -> pl.DataFrame:
     return df
 
 
-def make_match_config(account: AccountConfig) -> "MatchConfig":  # type: ignore[name-defined]
+def make_match_config(account: AccountConfig) -> "MatchConfig":  # type: ignore[name-defined]  # noqa: F821
     """Build a `MatchConfig` from an `AccountConfig`.
 
     The amount columns are compared as numeric values (delta computed).
