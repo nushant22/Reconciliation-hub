@@ -128,7 +128,7 @@ def save_reference_lookup(df, state_path):
 
 
 def merge_reference_lookup(today_df, key_col, state_path, retention_days=180, as_of=None,
-                            date_col=None, dedup_cols=None):
+                            date_col=None, dedup_cols=None, save=True):
     """Solves the same class of problem as the pending-refunds carry-forward,
     but for REFERENCE DATA instead of unmatched transactions: a daily
     single-day ledger file only contains that day's rows, so a lookup
@@ -159,8 +159,11 @@ def merge_reference_lookup(today_df, key_col, state_path, retention_days=180, as
         non-date columns, ensuring multi-ticket bookings under the same RRN
         are preserved rather than silently dropped to a single ticket.
 
+    save: when False the merge is computed in memory only (nothing is
+        written to disk) - used for "preview" runs.
+
     Returns the full merged+pruned table, already saved back to disk for
-    tomorrow's run."""
+    tomorrow's run (unless save=False)."""
     if today_df is None:
         today_df = pd.DataFrame(columns=[key_col])
     as_of = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now().normalize()
@@ -216,5 +219,6 @@ def merge_reference_lookup(today_df, key_col, state_path, retention_days=180, as
             print(f"  [refund-state] pruned {pruned} reference lookup entry(ies) "
                   f"older than {retention_days} days from {os.path.basename(state_path)}")
 
-    save_reference_lookup(merged, state_path)
+    if save:
+        save_reference_lookup(merged, state_path)
     return merged

@@ -235,3 +235,55 @@ python -m backend.airlines.backfill_fonepay_rrn <file-or-folder>        # seed R
 python -m backend.tests.airlines_fixtures sample_airlines_data          # demo input files
 pytest backend/tests/test_airlines.py backend/tests/test_airlines_e2e.py
 ```
+
+### Airlines storage: shared Fonepay history (Neon / Supabase / any Postgres)
+
+A Fonepay **refund** report has only the RRN; the ticket number lives in the Fonepay **transaction**
+report of the sale day. The Airlines page therefore remembers every RRN → ticket pair, plus pending
+refunds, so a refund posted on any later day still finds its ticket.
+
+On hosted Streamlit the server's disk is wiped on restart and shared by every user, so this memory
+must live in a database. **Only the memory moves there — the app, pages and matching logic stay on
+Streamlit exactly as before.**
+
+**One-time setup (about 10 minutes)**
+1. Create a free project at [neon.tech](https://neon.tech) (or Supabase) and copy its Postgres
+   connection string.
+2. In Streamlit (Community Cloud: *App → Settings → Secrets*) add:
+   ```toml
+   [database]
+   url = "postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require"
+   ```
+   (`.streamlit/secrets.toml.example` has the same snippet. For a local run you can instead set the
+   `AIRLINES_DATABASE_URL` environment variable.)
+3. Reload the app. Tables are created automatically; the Airlines page shows a green
+   *Shared history* banner.
+4. Open **Airlines → Fonepay history** and upload your historical Fonepay transaction reports once
+   (cover your longest refund delay, e.g. the last 2–3 months).
+
+After that, every **Reconcile** run with a Fonepay transaction file adds that day to the history
+automatically.
+
+**How it behaves with many users**
+* History is append-only with a unique (RRN, ticket) key — simultaneous or repeated uploads can't
+  duplicate or lose rows.
+* Pending refunds are one row per ticket. A run adds still-unmatched refunds and marks matched ones
+  *resolved*; it never rewrites the whole list, and a resolved ticket is never re-opened by a
+  slower or older run.
+* Fonepay refunds whose RRN isn't in the history yet are kept and retried on every later run (they
+  appear on the *Fonepay Refund Unresolved* sheet), so nothing is silently lost.
+* Untick **Save this run** for a preview/test run: it reads the shared data but writes nothing.
+* Every saved run is logged with the name entered in **Your name** and the files used.
+* **Fonepay history → Prepare backup CSV** downloads the whole history; uploading that CSV on the
+  same tab restores it.
+* If a database is configured but unreachable, the page stops with a clear message instead of
+  quietly using local files (which would split the history in two).
+* `fonepay_rrn_lookup.retention_days` in `config.yaml` (default 180) still prunes old pairs; raise it
+  if refunds can lag by more than ~6 months.
+
+Without a `[database]` secret the page uses local files (the original offline behaviour) and shows an
+orange warning.
+
+Tests: `pytest backend/tests/test_airlines_store.py` runs every storage behaviour on both backends
+against a real throw-away Postgres (via `pip install pgserver`, or set `TEST_DATABASE_URL`).
+

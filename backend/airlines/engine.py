@@ -32,6 +32,7 @@ from . import prep
 from . import matcher
 from . import report
 from . import refund_state
+from . import store as store_mod
 from .utils import select_fields_by_letters
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -253,7 +254,8 @@ def attach_cashback(recon_df, cashback_lookup, cashback_ticket_map, cancellation
 
 
 def build_refund_reconciliation(cfg, refund_df, refund_ticket_col, cancellation_df, cancellation_match_col,
-                                 refund_name="Airline Refund", cancellation_name="Cancellation Report"):
+                                 refund_name="Airline Refund", cancellation_name="Cancellation Report",
+                                 store=None):
     """Airline Refunds vs eSewa Refund (Cancellation Report), taking Airline
     Refunds as the source of truth, with carry-forward across daily runs.
 
@@ -264,7 +266,7 @@ def build_refund_reconciliation(cfg, refund_df, refund_ticket_col, cancellation_
 
     Returns (combined_airline_refunds, esewa_recon_df, matched_keys)."""
     refund_cfg = cfg.get("refund_reconciliation", {})
-    state_path = resolve_state_path(refund_cfg.get("state_file"))
+    store = store or store_mod.get_store(cfg, resolve_state_path)
     refund_date_col = refund_cfg.get("refund_date_column")
     txn_code_col = refund_cfg.get("txn_code_column", "Parent_Txn_code")
 
@@ -293,7 +295,7 @@ def build_refund_reconciliation(cfg, refund_df, refund_ticket_col, cancellation_
     # entire multi-day carry-forward backlog the first time a refund-free
     # day came along, since the caller only re-saves whatever this
     # function returns.
-    pending_df = refund_state.load_pending(state_path)
+    pending_df = store.pending_load()
     if not pending_df.empty:
         print(f"  [refund-recon] carrying forward {len(pending_df)} still-unmatched "
               f"refund(s) from prior run(s)")
@@ -611,11 +613,18 @@ def detect_input_files(cfg, input_dir=None):
     )
 
 
-def run(cfg=None, input_dir=None, output_dir=None):
+def run(cfg=None, input_dir=None, output_dir=None, store=None, persist=True, operator="",
+        run_id=None, file_names=None):
     """Runs the whole pipeline. Returns a list of per-airline result dicts:
         {"airline_key", "airline_name", "path", "summary", "recon", "unrecon"}
     where summary / recon / unrecon are the same DataFrames that were
-    written into the Excel report (so a UI can preview them)."""
+    written into the Excel report (so a UI can preview them).
+
+    store:    where history / pending refunds are remembered (default: the
+              configured database, else local files - see store.py).
+    persist:  False = preview run. Everything is read (shared history,
+              pending refunds) but NOTHING is written back.
+    operator: who ran it (recorded in the run log)."""
     input_dir = input_dir or INPUT_DIR
     output_dir = output_dir or OUTPUT_DIR
     print("=" * 60)
@@ -624,6 +633,10 @@ def run(cfg=None, input_dir=None, output_dir=None):
 
     cfg = cfg or load_config()
     names = cfg["names"]
+    store = store or store_mod.get_store(cfg, resolve_state_path)
+    run_id = run_id or store_mod.new_run_id()
+    print(f"   [storage] {store.describe()} - "
+          f"{'saving this run' if persist else 'PREVIEW run: nothing will be saved'}")
 
     print(f"\n1. Detecting input files in: {input_dir}")
     file_paths = detect_input_files(cfg, input_dir)
@@ -652,46 +665,90 @@ def run(cfg=None, input_dir=None, output_dir=None):
     # post days or weeks later, their RRN can always resolve - even on days
     # when no Fonepay Refund file is dropped.
     rrn_lookup_cfg = cfg.get("fonepay_rrn_lookup", {})
-    rrn_state_file = rrn_lookup_cfg.get("state_file")
     rrn_col_ledger = cfg["match_keys"].get("fonepay_refund", "RETRIEVAL_REFERENCE_NUMBER")
     ledger_b_rrn_col = rrn_lookup_cfg.get("ledger_b_rrn_column", "Retrieval Reference No")
+    lookup_fields = rrn_lookup_cfg.get("lookup_fields", ["Ticket No"])
+    date_col_for_lookup = rrn_lookup_cfg.get("date_column", "Recorded Date")
+    retention_days = rrn_lookup_cfg.get("retention_days", 180)
     fonepay_refund_df = None
     accumulated_ledger_b = None
 
-    if rrn_state_file:
-        rrn_state_path = resolve_state_path(rrn_state_file)
-        lookup_fields = rrn_lookup_cfg.get("lookup_fields", ["Ticket No"])
-        date_col_for_lookup = rrn_lookup_cfg.get("date_column", "Recorded Date")
+    slim_ledger_b = None
+    today_ledger_b = prepped.get("ledger_b")
+    if today_ledger_b is not None and not today_ledger_b.empty:
+        keep_cols = [ledger_b_rrn_col] + [c for c in lookup_fields if c != ledger_b_rrn_col]
+        if date_col_for_lookup not in keep_cols and date_col_for_lookup in today_ledger_b.columns:
+            keep_cols.append(date_col_for_lookup)
+        keep_cols = [c for c in keep_cols if c in today_ledger_b.columns]
+        slim_ledger_b = today_ledger_b[keep_cols].copy()
 
-        today_ledger_b = prepped.get("ledger_b")
-        if today_ledger_b is not None and not today_ledger_b.empty:
-            keep_cols = [ledger_b_rrn_col] + [c for c in lookup_fields if c != ledger_b_rrn_col]
-            if date_col_for_lookup not in keep_cols and date_col_for_lookup in today_ledger_b.columns:
-                keep_cols.append(date_col_for_lookup)
-            keep_cols = [c for c in keep_cols if c in today_ledger_b.columns]
-            slim_ledger_b = today_ledger_b[keep_cols].copy()
-
-            accumulated_ledger_b = refund_state.merge_reference_lookup(
-                slim_ledger_b, ledger_b_rrn_col, rrn_state_path,
-                retention_days=rrn_lookup_cfg.get("retention_days", 180),
-                date_col=date_col_for_lookup,
-            )
-            print(f"   [fonepay-rrn-lookup] {len(accumulated_ledger_b)} RRN mapping(s) available for lookup "
-                  f"(accumulated across days, not just today's Fonepay Ledger)")
+    if store.shared or rrn_lookup_cfg.get("state_file"):
+        if slim_ledger_b is not None and persist:
+            res = store.history_add(slim_ledger_b, ledger_b_rrn_col, date_col_for_lookup, lookup_fields,
+                                    retention_days=retention_days, operator=operator,
+                                    source=f"daily run {run_id}")
+            print(f"   [fonepay-rrn-lookup] today's Fonepay ledger: {res['added']} new mapping(s) added "
+                  f"to the history ({res['rows_in'] - res['added']} already there)")
+            accumulated_ledger_b = store.history_frame(ledger_b_rrn_col, date_col_for_lookup, lookup_fields)
         else:
-            accumulated_ledger_b = refund_state.load_reference_lookup(rrn_state_path)
+            accumulated_ledger_b = store.history_frame(ledger_b_rrn_col, date_col_for_lookup, lookup_fields,
+                                                       extra=slim_ledger_b)
+        print(f"   [fonepay-rrn-lookup] {len(accumulated_ledger_b)} RRN mapping(s) available for lookup "
+              f"(accumulated across days, not just today's Fonepay Ledger)")
     else:
         print("  [fonepay-rrn-lookup] WARNING: no fonepay_rrn_lookup.state_file configured - "
               "falling back to TODAY's Fonepay Ledger only. A refund for an RRN created on an "
               "earlier day will NOT be found. Set fonepay_rrn_lookup.state_file in config.yaml.")
         accumulated_ledger_b = prepped.get("ledger_b")
 
-    if fonepay_refund_raw is not None:
+    # Fonepay refunds whose RRN was not found in the history yet are kept
+    # (store.fp_unresolved_*) and retried on every later run, so a refund is
+    # never silently lost just because the original sale day isn't loaded yet.
+    fp_first_seen = {}
+    fp_unresolved_report = pd.DataFrame()
+    fp_prev = store.fp_unresolved_load()
+    if not fp_prev.empty:
+        if "_first_seen" in fp_prev.columns and "_row_key" in fp_prev.columns:
+            fp_first_seen = dict(zip(fp_prev["_row_key"], fp_prev["_first_seen"]))
+        prev_raw = fp_prev.drop(columns=["_row_key", "_first_seen"], errors="ignore")
+        fonepay_refund_raw = prev_raw if fonepay_refund_raw is None else pd.concat(
+            [prev_raw, fonepay_refund_raw], ignore_index=True, sort=False)
+        print(f"   [fonepay-refund] retrying {len(fp_prev)} Fonepay refund(s) whose RRN was not found earlier")
+
+    if fonepay_refund_raw is not None and not fonepay_refund_raw.empty:
+        raw_cols = list(fonepay_refund_raw.columns)
+        keys = [store_mod.row_key_from_dict(dict(zip(raw_cols, row)))
+                for row in fonepay_refund_raw.itertuples(index=False, name=None)]
+        fonepay_refund_raw = fonepay_refund_raw.assign(_row_key=keys)
+        fonepay_refund_raw = fonepay_refund_raw[~fonepay_refund_raw["_row_key"].duplicated(keep="last")] \
+            .reset_index(drop=True)
+        row_keys = list(fonepay_refund_raw["_row_key"])
         fonepay_refund_df = prep.prep_fonepay_refund_lookup(
-            fonepay_refund_raw, accumulated_ledger_b,
+            fonepay_refund_raw.drop(columns=["_row_key"]), accumulated_ledger_b,
             rrn_refund_col=rrn_col_ledger, rrn_ledger_col=ledger_b_rrn_col,
             airline_confirmed_tickets=airline3_refund_tickets,
         )
+        if "Ticket No" in fonepay_refund_df.columns:
+            has_ticket = ~fonepay_refund_df["Ticket No"].map(lambda v: store_mod._cell(v) is None
+                                                             or store_mod._cell(v).strip() == "").values
+        else:
+            has_ticket = pd.Series([False] * len(fonepay_refund_df)).values
+        unresolved = fonepay_refund_raw[~has_ticket].reset_index(drop=True)
+        resolved_keys = [k for k, ok in zip(row_keys, has_ticket) if ok]
+        if persist:
+            store.fp_unresolved_sync(unresolved, resolved_keys, run_id=run_id, operator=operator)
+        if not unresolved.empty:
+            today_ts = pd.Timestamp.now().normalize()
+            rep_df = unresolved.drop(columns=["_row_key"]).copy()
+            first = [pd.Timestamp(fp_first_seen.get(k, today_ts)).normalize() for k in unresolved["_row_key"]]
+            rep_df["Reason"] = "RRN not found in Fonepay history"
+            rep_df["First Seen"] = [f.strftime("%Y-%m-%d") for f in first]
+            rep_df["Days Outstanding"] = [(today_ts - f).days for f in first]
+            grace = (cfg.get("refund_reconciliation") or {}).get("grace_period_days", 2)
+            rep_df["Refund Status"] = ["Overdue" if d > grace else "Pending" for d in rep_df["Days Outstanding"]]
+            fp_unresolved_report = rep_df
+            print(f"   [fonepay-refund] {len(rep_df)} Fonepay refund(s) have no ticket yet "
+                  f"(RRN not in history) - kept for retry on later runs")
 
     # Unified 'Reverted?' ticket set - ANY ticket that shows up as reverted
     # on OUR side (not the airline's), from any of the three sources below.
@@ -759,6 +816,7 @@ def run(cfg=None, input_dir=None, output_dir=None):
 
     os.makedirs(output_dir, exist_ok=True)
     results = []
+    run_summary = {}
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_paths = []
 
@@ -877,6 +935,7 @@ def run(cfg=None, input_dir=None, output_dir=None):
                 cancellation_df, cancellation_match_col,
                 refund_name=f"{airline_name} Refund",
                 cancellation_name=cancellation_name,
+                store=store,
             )
 
             if not esewa_refund_recon_df.empty:
@@ -921,13 +980,13 @@ def run(cfg=None, input_dir=None, output_dir=None):
             unrecon_refunds = combined_airline_refunds[~combined_airline_refunds["_norm_ticket"].isin(all_matched_refund_keys)].drop(columns=["_norm_ticket"], errors="ignore").reset_index(drop=True)
             refund_unrecon_df = refund_state.tag_aging(unrecon_refunds, grace_period_days=cfg.get("refund_reconciliation", {}).get("grace_period_days", 2))
 
-            # Persist unmatched refunds for next run
-            state_file_cfg = cfg.get("refund_reconciliation", {}).get("state_file", "C:/ReconState/pending_refunds.csv")
-            state_path = resolve_state_path(state_file_cfg)
-            refund_state.save_pending(
-                refund_unrecon_df.drop(columns=["Days Outstanding", "Refund Status"], errors="ignore"),
-                state_path,
-            )
+            # Persist unmatched refunds for next run (one row per ticket in the
+            # shared database; matched ones are marked resolved, never re-opened)
+            if persist:
+                store.pending_sync(
+                    refund_unrecon_df, all_matched_refund_keys & set(combined_airline_refunds["_norm_ticket"]),
+                    airline3_refund_ticket_col, run_id=run_id, operator=operator,
+                )
 
             # Refund Unrecon field selection is fully configurable via
             # report_fields.refund_unrecon - no hardcoded Buddha-specific
@@ -979,6 +1038,11 @@ def run(cfg=None, input_dir=None, output_dir=None):
                     "Refund Overdue Count": int((refund_unrecon_df["Refund Status"] == "Overdue").sum()) if not refund_unrecon_df.empty else 0,
                     "Refund Unrecon Amount": round(fp_unrecon_amt, 2),
                 }
+
+        # Fonepay refunds that couldn't be tied to a ticket yet (RRN not in the
+        # history) - shown with the airline that owns the refund pipeline.
+        if airline_key == "airline_3" and not fp_unresolved_report.empty:
+            unrecon_sheets["Fonepay Refund Unresolved"] = fp_unresolved_report
 
         # ---- summary row (single airline, one row per ledger) ----
         total_tickets = len(airline_full)
@@ -1048,6 +1112,10 @@ def run(cfg=None, input_dir=None, output_dir=None):
         )
         report.build_report(recon_sheets, unrecon_sheets, summary_df, output_path)
         output_paths.append(output_path)
+        run_summary[airline_name] = {
+            "tickets": int(total_tickets), "matched_esewa": int(recon_a),
+            "matched_fonepay": int(recon_b), "unrecon": int(unrecon_count),
+        }
         results.append({
             "airline_key": airline_key,
             "airline_name": airline_name,
@@ -1058,6 +1126,10 @@ def run(cfg=None, input_dir=None, output_dir=None):
         })
         print(f"   -> saved {os.path.basename(output_path)}\n")
 
+    if persist:
+        store.log_run({"run_id": run_id, "operator": operator, "persisted": True,
+                       "created_at": datetime.now().isoformat(timespec="seconds"),
+                       "files": list(file_names or []), "summary": run_summary})
     print(f"\n{'=' * 60}")
     print("DONE. Reports saved to:")
     for p in output_paths:
@@ -1091,13 +1163,15 @@ def detect_uploaded_files(uploads, cfg=None):
         shutil.rmtree(tmp_in, ignore_errors=True)
 
 
-def run_airline_reconciliation(uploads, cfg=None, output_dir=None):
+def run_airline_reconciliation(uploads, cfg=None, output_dir=None, store=None, persist=True, operator=""):
     """Entry point for the Streamlit page.
 
     uploads: list of (file_name, bytes) - any mix of the ledger / airline /
         refund files. They are written to a private temp folder, detected
         by column signature (file names don't matter), and reconciled.
     cfg: parsed config dict (defaults to the saved config.yaml).
+    store / persist / operator: see run() - persist=False is a preview run
+        that reads the shared history but saves nothing.
     Returns (results, detected, log_text) where detected maps
         source_key -> original uploaded file name.
     Raises RuntimeError with a readable message if a required file is
@@ -1120,7 +1194,9 @@ def run_airline_reconciliation(uploads, cfg=None, output_dir=None):
         with contextlib.redirect_stdout(buf):
             try:
                 detected_paths = detect_input_files(cfg, tmp_in)
-                results = run(cfg=cfg, input_dir=tmp_in, output_dir=out_dir)
+                results = run(cfg=cfg, input_dir=tmp_in, output_dir=out_dir, store=store,
+                              persist=persist, operator=operator,
+                              file_names=[name_by_path[p] for p in sorted(name_by_path)])
             except Exception as exc:
                 exc.log_text = buf.getvalue()
                 raise
@@ -1136,6 +1212,66 @@ def run_airline_reconciliation(uploads, cfg=None, output_dir=None):
         shutil.rmtree(tmp_in, ignore_errors=True)
         if not output_dir:
             shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def default_store(cfg=None):
+    """The store the app uses: shared database when configured, else local files."""
+    return store_mod.get_store(cfg or load_config(), resolve_state_path)
+
+
+def add_history_files(uploads, cfg=None, store=None, operator=""):
+    """Adds Fonepay transaction files (RRN + Ticket No) to the shared lookup
+    history WITHOUT running a reconciliation - for the one-time historical
+    load, topping up a gap, or restoring a backup CSV.
+
+    uploads: list of (file_name, bytes). Each is read with the same header
+    row / sheet rules as the daily Fonepay ledger (config.yaml: header_rows.
+    ledger_b), so a normal Fonepay export and a downloaded backup both work.
+    Returns one dict per file: {file, rows_read, added, skipped, error}."""
+    cfg = cfg or load_config()
+    store = store or default_store(cfg)
+    lk = cfg.get("fonepay_rrn_lookup") or {}
+    rrn_col = lk.get("ledger_b_rrn_column", "Retrieval Reference No")
+    date_col = lk.get("date_column", "Recorded Date")
+    fields = lk.get("lookup_fields", ["Ticket No"])
+    retention = lk.get("retention_days", 180)
+    header_cfg = cfg["header_rows"]["ledger_b"]
+    match_key = cfg["match_keys"]["ledger_b"]
+    sheet = (cfg.get("sheet_names") or {}).get("ledger_b")
+
+    report_rows = []
+    tmp = tempfile.mkdtemp(prefix="airlines_hist_")
+    try:
+        for i, (fname, data) in enumerate(uploads):
+            row = {"file": fname, "rows_read": 0, "added": 0, "skipped": 0, "error": ""}
+            try:
+                path = os.path.join(tmp, f"{i:02d}_{os.path.basename(fname)}")
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                df = loader.load_source(path, header_cfg, sheet_name=sheet)
+                df = loader.drop_junk_rows(df, match_key)
+                missing = [c for c in (rrn_col, "Ticket No") if c not in df.columns]
+                if missing:
+                    raise ValueError(f"column(s) {missing} not found. This file has: {list(df.columns)[:15]}")
+                res = store.history_add(df, rrn_col, date_col, fields, retention_days=retention,
+                                        operator=operator, source=f"history upload: {os.path.basename(fname)}")
+                row.update(rows_read=res["rows_in"], added=res["added"], skipped=res["skipped"])
+            except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
+                row["error"] = f"{type(exc).__name__}: {exc}"
+            report_rows.append(row)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return report_rows
+
+
+def history_backup(cfg=None, store=None):
+    """Whole RRN -> Ticket history as a DataFrame (RRN, Ticket No, date) - save it
+    as CSV; uploading that CSV on the history tab restores it."""
+    cfg = cfg or load_config()
+    store = store or default_store(cfg)
+    lk = cfg.get("fonepay_rrn_lookup") or {}
+    return store.history_export(lk.get("ledger_b_rrn_column", "Retrieval Reference No"),
+                                lk.get("date_column", "Recorded Date"))
 
 
 if __name__ == "__main__":

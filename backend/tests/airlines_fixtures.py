@@ -36,7 +36,10 @@ def _wb(rows_by_sheet):
     return wb
 
 
-def build_sample_files(folder: str, today: date | None = None) -> dict[str, str]:
+def build_sample_files(folder: str, today: date | None = None, late_refund: bool = False) -> dict[str, str]:
+    """late_refund=True: B5's Fonepay refund arrives under RRN 'R77', and the sale
+    that created R77 is NOT in today's Fonepay ledger (it was on an earlier day) -
+    so the ticket can only be found in the saved RRN history."""
     today = today or date.today()
     os.makedirs(folder, exist_ok=True)
     paths: dict[str, str] = {}
@@ -73,8 +76,9 @@ def build_sample_files(folder: str, today: date | None = None) -> dict[str, str]
     fonepay = [b_hdr,
                b_row("R2", "1110000000002", 1100),   # S2
                b_row("R6", "2220000000002", 1300),   # Y2
-               b_row("R9", "3330000000002", 2500),   # B2
-               b_row("R5", "3330000000005", 1500)]   # B5 (refunded via Fonepay)
+               b_row("R9", "3330000000002", 2500)]   # B2
+    if not late_refund:
+        fonepay.append(b_row("R5", "3330000000005", 1500))   # B5 (refunded via Fonepay)
     paths["ledger_b"] = os.path.join(folder, "fonepay_ledger.xlsx")
     _wb({"Sheet1": fonepay}).save(paths["ledger_b"])
 
@@ -157,11 +161,22 @@ def build_sample_files(folder: str, today: date | None = None) -> dict[str, str]
 
     # ---- Fonepay Refund: header row 1 -----------------------------------------
     fr = [["RETRIEVAL_REFERENCE_NUMBER", "REFUND_AMOUNT", "MERCHANT_PAYMENT_ADVICE_ID"],
-          ["R5", 1450, "ADV1"]]
+          ["R77" if late_refund else "R5", 1450, "ADV1"]]
     paths["fonepay_refund"] = os.path.join(folder, "fonepay_refund.xlsx")
     _wb({"Sheet1": fr}).save(paths["fonepay_refund"])
 
     return paths
+
+
+def build_history_file(path: str, rows: list[tuple[str, str, str]]) -> str:
+    """A Fonepay transaction report (same layout as the daily one) holding
+    (RRN, Ticket No, 'YYYY-MM-DD') rows - e.g. an old sale day for the history upload."""
+    hdr = ["Recorded Date", "Retrieval Reference No", "Booking Contact", "flightType", "Sector",
+           "Flight Date", "Flight No", "PNR No", "Ticket No", "Passenger", "Total Fare"]
+    data = [hdr] + [[d, rrn, "9800000000", "OW", "KTM-BIR", d, "U4-101", "PNRB", t, "Test Pax", 1500]
+                    for rrn, t, d in rows]
+    _wb({"Sheet1": data}).save(path)
+    return path
 
 
 if __name__ == "__main__":

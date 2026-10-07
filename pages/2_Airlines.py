@@ -8,6 +8,12 @@ report fields, prep switches, refund aging, carry-forward state — is read
 from `backend/airlines/config.yaml`; you can view and edit that file on
 this page.
 
+Remembered between runs (so a refund posted days after the sale can still find
+its ticket): the Fonepay RRN -> Ticket No history, pending refunds, and Fonepay
+refunds still waiting for a ticket. With a database configured (Streamlit secret
+`[database] url = "postgresql://..."`) this is shared by everyone and permanent;
+without one it falls back to local files on the server (not shared).
+
 Drop all of the day's files into the uploader in one go. File names do not
 matter: each file is recognised by its column headers.
 """
@@ -18,12 +24,14 @@ import io
 import logging
 import os
 import zipfile
+from datetime import date
 
 import pandas as pd
 import streamlit as st
 import yaml
 
 from backend.airlines import engine
+from backend.airlines import store as store_mod
 
 logging.basicConfig(
     level=os.environ.get("RECON_LOG_LEVEL", "INFO"),
@@ -145,6 +153,122 @@ def _kpis(result: dict) -> dict:
     }
 
 
+@st.cache_resource(show_spinner=False)
+def _pg_store(url: str):
+    return store_mod.PostgresStore(url)
+
+
+def _get_store(cfg: dict):
+    """Shared database when configured, else local files. A configured but
+    unreachable database is an error (never a silent fall-back, which would
+    split the history between two places)."""
+    try:
+        url = store_mod.database_url()
+        return _pg_store(url) if url else engine.default_store(cfg)
+    except store_mod.StoreError as exc:
+        st.error(f"Storage problem: {exc}")
+        st.caption("Check the `[database] url` secret and that the database is reachable, then reload.")
+        return None
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _stats(_store, key: str) -> dict:
+    return _store.history_stats()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _waiting(_store, key: str):
+    return _store.pending_load(), _store.fp_unresolved_load()
+
+
+def _clear_caches() -> None:
+    _stats.clear()
+    _waiting.clear()
+
+
+def history_tab(cfg: dict, store, operator: str) -> None:
+    st.markdown('<div class="step">Fonepay RRN → Ticket history</div>', unsafe_allow_html=True)
+    st.markdown(
+        "A Fonepay **refund** report only has the RRN; the ticket number comes from the Fonepay "
+        "**transaction** report of the day of the sale. This history remembers every RRN → ticket "
+        "pair, so a refund posted on any later day can still be matched. It grows automatically "
+        "every time you run **Reconcile** with a Fonepay transaction file; use this tab to load "
+        "older days **once** (or to fill a gap)."
+    )
+
+    try:
+        stt = _stats(store, store.describe())
+    except store_mod.StoreError as exc:
+        st.error(f"Storage problem: {exc}")
+        return
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("RRN → ticket pairs", f"{stt['rows']:,}")
+    m2.metric("Distinct RRNs", f"{stt['rrns']:,}")
+    m3.metric("Earliest sale date", str(stt["min_date"] or "—"))
+    m4.metric("Latest sale date", str(stt["max_date"] or "—"))
+    if stt["last_added"]:
+        st.caption(f"Last added to: {pd.Timestamp(stt['last_added']).strftime('%Y-%m-%d %H:%M')} · "
+                   f"storage: {store.describe()}")
+
+    st.markdown("**Add historical Fonepay transaction reports**")
+    st.caption("Same files you drop into Reconcile as the Fonepay ledger — as many days or months as you "
+               "have, in one go. Safe to repeat: pairs already on file are skipped. A backup CSV "
+               "downloaded from this tab can be uploaded here to restore it.")
+    files = st.file_uploader(
+        "Fonepay transaction reports", type=["xlsx", "xlsm", "xls", "csv"],
+        accept_multiple_files=True, key="airlines_hist_uploads", label_visibility="collapsed",
+    )
+    if files and st.button("Add to history", key="airlines_hist_add"):
+        with st.spinner("Reading files and adding to the history…"):
+            try:
+                rep = engine.add_history_files([(f.name, f.getvalue()) for f in files],
+                                               cfg=cfg, store=store, operator=operator)
+                st.session_state["airlines_hist_report"] = rep
+            except store_mod.StoreError as exc:
+                st.error(f"Storage problem: {exc}")
+        _clear_caches()
+        st.rerun()
+
+    rep = st.session_state.get("airlines_hist_report")
+    if rep:
+        df = pd.DataFrame(rep).rename(columns={"file": "File", "rows_read": "Rows read", "added": "New pairs added",
+                                               "skipped": "Skipped (blank RRN/ticket)", "error": "Problem"})
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        if any(r["error"] for r in rep):
+            st.error("Some files could not be added — see the Problem column. The others were added.")
+        else:
+            st.success(f"Added {sum(r['added'] for r in rep):,} new pair(s).")
+
+    st.markdown("**Backup**")
+    if st.button("Prepare backup CSV", key="airlines_hist_prep"):
+        st.session_state["airlines_hist_backup"] = engine.history_backup(cfg, store).to_csv(index=False).encode("utf-8")
+    if st.session_state.get("airlines_hist_backup"):
+        st.download_button("⬇ Download history backup (.csv)", st.session_state["airlines_hist_backup"],
+                           file_name=f"fonepay_history_backup_{date.today():%Y%m%d}.csv", mime="text/csv",
+                           key="airlines_hist_dl")
+
+    pending, unresolved = _waiting(store, store.describe())
+    with st.expander(f"Airline refunds still waiting for the ledger side ({len(pending):,})"):
+        if pending.empty:
+            st.caption("None.")
+        else:
+            st.dataframe(_display_frame(pending, 500), hide_index=True, use_container_width=True)
+    with st.expander(f"Fonepay refunds waiting for a ticket — RRN not in history ({len(unresolved):,})"):
+        if unresolved.empty:
+            st.caption("None.")
+        else:
+            st.dataframe(_display_frame(unresolved.drop(columns=["_row_key"], errors="ignore"), 500),
+                         hide_index=True, use_container_width=True)
+    with st.expander("Recent runs"):
+        runs = store.recent_runs(10)
+        if not runs:
+            st.caption("No runs recorded yet.")
+        for r in runs:
+            when = pd.Timestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M") if r.get("created_at") else "—"
+            st.caption(f"**{r.get('operator') or '—'}** · {when} · "
+                       f"{'saved' if r.get('persisted') else 'preview'} · {', '.join(r.get('files') or [])}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +335,32 @@ def main() -> None:
         st.error("Fix config.yaml above to continue.")
         return
 
+    # ── Storage ──────────────────────────────────────────────────────────────
+    store = _get_store(cfg)
+    if store is None:
+        return
+    c_op, c_st = st.columns([1, 3])
+    operator = c_op.text_input("Your name", value=os.environ.get("USER", "ops.analyst"),
+                               key="airlines_operator",
+                               help="Recorded in the run log next to anything you save.").strip()
+    with c_st:
+        if store.shared:
+            st.success(f"🟢 Shared history: {store.describe()}. Everyone using this app sees the same "
+                       "RRN history and pending refunds.")
+        else:
+            st.warning(
+                "🟠 No shared database configured — history is kept in local files on this server. "
+                "On hosted Streamlit that is lost on restart and not shared between users. "
+                "Add a `[database] url` secret to fix this (see README → Airlines storage).")
+
+    tab_run, tab_hist = st.tabs(["Reconcile", "Fonepay history"])
+    with tab_hist:
+        history_tab(cfg, store, operator)
+    with tab_run:
+        reconcile_tab(cfg, store, operator)
+
+
+def reconcile_tab(cfg: dict, store, operator: str) -> None:
     # ── Step 2 · Upload ──────────────────────────────────────────────────────
     st.markdown('<div class="step">Step 2 · Upload files</div>', unsafe_allow_html=True)
 
@@ -269,15 +419,28 @@ def main() -> None:
         f"`{engine.STATE_DIR}` unless config.yaml points elsewhere."
     )
 
+    persist = st.checkbox(
+        "Save this run to the shared history and pending refunds",
+        value=True,
+        key="airlines_persist",
+        help="Untick for a preview/test run: it reads the shared data but saves nothing, so test "
+             "files can't pollute the history or the pending-refund list.",
+    )
+    if not persist:
+        st.info("Preview mode — results are shown but nothing will be saved.")
+
     if st.button("Run Reconciliation", type="primary"):
         try:
             with st.spinner("Matching tickets and building reports…"):
-                results, det, log_text = engine.run_airline_reconciliation(payload, cfg=cfg)
+                results, det, log_text = engine.run_airline_reconciliation(
+                    payload, cfg=cfg, store=store, persist=persist, operator=operator)
             st.session_state["airlines_results"] = {
                 "results": results,
                 "log": log_text,
                 "files": [n for n, _ in payload],
+                "persisted": persist,
             }
+            _clear_caches()
         except Exception as exc:  # noqa: BLE001
             logging.exception("airline reconciliation failed")
             st.session_state.pop("airlines_results", None)
@@ -297,6 +460,15 @@ def _show_previous_results() -> None:
     if not stored:
         return
     results = stored["results"]
+    if not stored.get("persisted", True):
+        st.info("This was a preview run — nothing from it was saved.")
+    for r in results:
+        unres = r["unrecon"].get("Fonepay Refund Unresolved")
+        if unres is not None and not unres.empty:
+            st.warning(
+                f"**{len(unres)} Fonepay refund(s)** have no ticket yet because their RRN isn't in the "
+                "Fonepay history. They are kept and retried on every run — add the original sale day on "
+                "the **Fonepay history** tab and they will match automatically.")
 
     # ── Step 4 · Summary ─────────────────────────────────────────────────────
     st.markdown('<div class="step">Step 4 · Summary</div>', unsafe_allow_html=True)
