@@ -727,6 +727,7 @@ def run(cfg=None, input_dir=None, output_dir=None, store=None, persist=True, ope
             fonepay_refund_raw.drop(columns=["_row_key"]), accumulated_ledger_b,
             rrn_refund_col=rrn_col_ledger, rrn_ledger_col=ledger_b_rrn_col,
             airline_confirmed_tickets=airline3_refund_tickets,
+            refund_amount_col=cfg.get("amount_fields", {}).get("fonepay_refund", "REFUND_AMOUNT"),
         )
         if "Ticket No" in fonepay_refund_df.columns:
             has_ticket = ~fonepay_refund_df["Ticket No"].map(lambda v: store_mod._cell(v) is None

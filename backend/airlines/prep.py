@@ -451,7 +451,8 @@ def build_cashback_lookup(lookup_df, txn_code_col="Parent_Txn_code", child_statu
 def prep_fonepay_refund_lookup(fonepay_refund_df, ledger_b_df,
                                rrn_refund_col="RETRIEVAL_REFERENCE_NUMBER",
                                rrn_ledger_col="Retrieval Reference No",
-                               airline_confirmed_tickets=None):
+                               airline_confirmed_tickets=None,
+                               refund_amount_col="REFUND_AMOUNT"):
     """Looks up RETRIEVAL_REFERENCE_NUMBER from Fonepay Refund in Fonepay sales (ledger_b)
     to attach Ticket No, PNR No, Sector, Passenger, Flight Date, etc.
 
@@ -463,10 +464,13 @@ def prep_fonepay_refund_lookup(fonepay_refund_df, ledger_b_df,
     case or a stray space, leaving 'Ticket No' blank on every row and
     making Fonepay Refund Recon match essentially nothing downstream.
 
-    Handles multi-ticket bookings under the same RRN without discarding
-    passenger tickets or assigning all refund rows to the first ticket.
-    If airline_confirmed_tickets is provided, tickets confirmed by the airline
-    are prioritized for pairing with refund entries.
+    Handles multi-ticket bookings under the same RRN by grouping Fonepay
+    refund rows, summing their amount, and assigning an equal share to each
+    distinct ticket linked to that RRN. The divisor comes from all ticket
+    occurrences in the sales lookup, even when only some tickets are in the
+    current airline refund file. Confirmed tickets are listed first when an
+    airline refund ticket set is supplied, but all linked tickets are still
+    included in the split.
     """
     if fonepay_refund_df is None or fonepay_refund_df.empty:
         return fonepay_refund_df
@@ -487,49 +491,81 @@ def prep_fonepay_refund_lookup(fonepay_refund_df, ledger_b_df,
     extra_cols = ["Ticket No", "PNR No", "Sector", "Passenger", "Flight Date", "Flight No", "Total Fare"]
     cols_to_pull = [c for c in extra_cols if c in l_df.columns]
 
-    confirmed_set = set()
-    if airline_confirmed_tickets:
-        confirmed_set = {normalize_ticket(t) for t in airline_confirmed_tickets if normalize_ticket(t)}
-
     # Distinct ticket entries per RRN from sales ledger
     if "Ticket No" in cols_to_pull:
         l_subset = l_df[["_rrn"] + cols_to_pull].drop_duplicates(subset=["_rrn", "Ticket No"]).copy()
     else:
         l_subset = l_df[["_rrn"] + cols_to_pull].drop_duplicates(subset=["_rrn"]).copy()
 
-    # Pre-allocate extra columns on fr as object dtype
-    for col in cols_to_pull:
-        if col not in fr.columns:
-            fr[col] = pd.Series([None] * len(fr), dtype=object)
+    confirmed_set = {
+        normalize_ticket(t) for t in (airline_confirmed_tickets or [])
+        if normalize_ticket(t)
+    }
 
-    # Group and map each RRN's refund row(s) to distinct ticket row(s)
-    for rrn, grp_indices in fr.groupby("_rrn").groups.items():
+    # One refund row can cover a booking with several tickets sharing its
+    # RRN. Expand each RRN group to one row per distinct ticket and split
+    # the group's total refund amount evenly across those tickets.
+    expanded_rows = []
+
+    for rrn, refund_group in fr.groupby("_rrn", sort=False, dropna=False):
+        source_rows = refund_group.drop(columns=["_rrn"], errors="ignore")
+
         if not rrn:
+            expanded_rows.extend(source_rows.to_dict("records"))
             continue
+
         s_matches = l_subset[l_subset["_rrn"] == rrn]
-        if s_matches.empty:
+
+        if s_matches.empty or "Ticket No" not in s_matches.columns:
+            expanded_rows.extend(source_rows.to_dict("records"))
             continue
 
-        s_rows = s_matches.copy()
-        if confirmed_set and "Ticket No" in s_rows.columns:
-            # Prioritize tickets that match airline refund records
-            is_conf = s_rows["Ticket No"].apply(normalize_ticket).isin(confirmed_set)
-            s_rows["_conf_prio"] = is_conf.astype(int)
-            s_rows = s_rows.sort_values(by="_conf_prio", ascending=False).drop(columns=["_conf_prio"])
+        # Count every distinct ticket in the sales lookup, not duplicate
+        # sales rows or only the tickets present in this airline refund file.
+        s_matches = s_matches.copy()
+        s_matches["_normalized_ticket"] = s_matches["Ticket No"].apply(normalize_ticket)
+        s_matches = s_matches[s_matches["_normalized_ticket"] != ""]
+        s_matches = s_matches.drop_duplicates(subset=["_normalized_ticket"], keep="first")
 
-        s_rows_list = [s_rows.iloc[i] for i in range(len(s_rows))]
+        if confirmed_set:
+            s_matches["_confirmed_first"] = (~s_matches["_normalized_ticket"].isin(confirmed_set)).astype(int)
+            s_matches = s_matches.sort_values("_confirmed_first").drop(columns=["_confirmed_first"])
 
-        # Assign 1-to-1 to each refund row in this group
-        for i, idx in enumerate(grp_indices):
-            chosen = s_rows_list[i] if i < len(s_rows_list) else s_rows_list[-1]
+        if s_matches.empty:
+            expanded_rows.extend(source_rows.to_dict("records"))
+            continue
+
+        base_row = source_rows.iloc[0].to_dict()
+
+        if refund_amount_col in source_rows.columns:
+            total_amount = _amount_series(source_rows[refund_amount_col]).sum(min_count=1)
+        else:
+            total_amount = None
+
+        if pd.notna(total_amount):
+            total_cents = int(round(float(total_amount) * 100))
+            base_cents, remainder_cents = divmod(total_cents, len(s_matches))
+            ticket_amounts = [
+                (base_cents + (1 if i < remainder_cents else 0)) / 100
+                for i in range(len(s_matches))
+            ]
+        else:
+            ticket_amounts = [None] * len(s_matches)
+
+        for i, (_, sale_row) in enumerate(s_matches.iterrows()):
+            refund_row = base_row.copy()
+            if ticket_amounts[i] is not None:
+                refund_row[refund_amount_col] = ticket_amounts[i]
             for col in cols_to_pull:
-                fr.at[idx, col] = chosen[col]
+                refund_row[col] = sale_row[col]
+            expanded_rows.append(refund_row)
 
-    fr = fr.drop(columns=["_rrn"], errors="ignore")
+    result = pd.DataFrame(expanded_rows)
 
-    matched_cnt = fr["Ticket No"].notna().sum() if "Ticket No" in fr.columns else 0
-    print(f"  [lookup] Fonepay Refund: matched {matched_cnt} of {len(fr)} rows with Fonepay sales file by RRN")
-    return fr
+    matched_cnt = result["Ticket No"].notna().sum() if "Ticket No" in result.columns else 0
+    print(f"  [lookup] Fonepay Refund: matched {matched_cnt} of {len(result)} expanded rows with Fonepay sales file by RRN")
+
+    return result
 
 
 PREP_FUNCS = {

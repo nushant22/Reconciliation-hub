@@ -1,0 +1,19 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\eSewas\AppData\Local\Python\pythoncore-3.14-64\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\eSewas\Desktop\Reconciliation
+plugins: anyio-4.15.1
+collecting ... collected 10 items
+
+backend/tests/test_airlines_e2e.py::test_detection_ignores_file_names PASSED [ 10%]
+backend/tests/test_airlines_e2e.py::test_missing_required_file_is_a_readable_error PASSED [ 20%]
+backend/tests/test_airlines_e2e.py::test_full_run_known_numbers PASSED   [ 30%]
+backend/tests/test_airlines_e2e.py::test_reports_are_valid_excel PASSED  [ 40%]
+backend/tests/test_airlines_e2e.py::test_pending_refund_carries_forward_between_runs PASSED [ 50%]
+backend/tests/test_airlines_e2e.py::test_config_edit_changes_names PASSED [ 60%]
+backend/tests/test_airlines_e2e.py::test_html_table_xls_loads[True-utf-8] PASSED [ 70%]
+backend/tests/test_airlines_e2e.py::test_html_table_xls_loads[True-utf-16] PASSED [ 80%]
+backend/tests/test_airlines_e2e.py::test_html_table_xls_loads[False-utf-8] PASSED [ 90%]
+backend/tests/test_airlines_e2e.py::test_html_table_xls_loads[False-utf-16] PASSED [100%]
+
+============================= 10 passed in 9.54s ==============================
