@@ -1,3 +1,0 @@
-## main...origin/main
-?? push.txt
-?? status2.txt

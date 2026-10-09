@@ -729,11 +729,30 @@ def run(cfg=None, input_dir=None, output_dir=None, store=None, persist=True, ope
             airline_confirmed_tickets=airline3_refund_tickets,
             refund_amount_col=cfg.get("amount_fields", {}).get("fonepay_refund", "REFUND_AMOUNT"),
         )
+        # Determine which original rows (by RRN) got at least one ticket match
         if "Ticket No" in fonepay_refund_df.columns:
-            has_ticket = ~fonepay_refund_df["Ticket No"].map(lambda v: store_mod._cell(v) is None
-                                                             or store_mod._cell(v).strip() == "").values
+            # Create a temporary column to track the normalized RRN
+            fonepay_refund_raw_with_rrn = fonepay_refund_raw.copy()
+            fonepay_refund_raw_with_rrn["_rrn"] = fonepay_refund_raw_with_rrn[rrn_col_ledger].apply(prep.normalize_ticket)
+            
+            # Find which RRNs have at least one ticket match in the expanded data
+            fonepay_refund_df_with_rrn = fonepay_refund_df.copy()
+            fonepay_refund_df_with_rrn["_rrn"] = fonepay_refund_df_with_rrn[rrn_col_ledger].apply(prep.normalize_ticket) if rrn_col_ledger in fonepay_refund_df.columns else ""
+            
+            resolved_rrns = set(
+                fonepay_refund_df_with_rrn.loc[
+                    ~fonepay_refund_df_with_rrn["Ticket No"].map(
+                        lambda v: store_mod._cell(v) is None or store_mod._cell(v).strip() == ""
+                    ),
+                    "_rrn"
+                ].values
+            )
+            
+            # Create boolean mask at the ORIGINAL row level
+            has_ticket = fonepay_refund_raw_with_rrn["_rrn"].isin(resolved_rrns).values
         else:
-            has_ticket = pd.Series([False] * len(fonepay_refund_df)).values
+            has_ticket = pd.Series([False] * len(fonepay_refund_raw)).values
+
         unresolved = fonepay_refund_raw[~has_ticket].reset_index(drop=True)
         resolved_keys = [k for k, ok in zip(row_keys, has_ticket) if ok]
         if persist:
